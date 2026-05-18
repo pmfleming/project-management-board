@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 
-type JsonRecord = Record<string, any>;
+type JsonRecord = Record<string, unknown>;
 
 interface MeasurementTask {
   id: string;
@@ -17,7 +17,7 @@ interface MeasurementTask {
 
 interface MeasurementCatalog {
   tasks?: MeasurementTask[];
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface MeasurementRun {
@@ -40,7 +40,7 @@ interface MeasurementRun {
   finished_at?: number;
   log_path?: string;
   error?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 const repoRoot = resolve(process.cwd());
@@ -70,6 +70,11 @@ function projectBoardPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? "/", "http://localhost");
         try {
+          if (req.method === "GET" && url.pathname === "/viewer") {
+            res.writeHead(302, { Location: "/viewer/" });
+            res.end();
+            return;
+          }
           if (req.method === "GET" && url.pathname === "/viewer/") {
             return sendFile(res, join(repoRoot, "public", "viewer", "index.html"));
           }
@@ -128,7 +133,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       "print(json.dumps(clear_app_package_buffers()))",
     ].join("; ");
     const payload = await runJsonCommand([pythonPath(), "-c", script]);
-    const blocked = Boolean(payload?.clear_result?.blocked);
+    const clearResult =
+      typeof payload.clear_result === "object" && payload.clear_result !== null
+        ? (payload.clear_result as JsonRecord)
+        : {};
+    const blocked = Boolean(clearResult.blocked);
     sendJson(res, blocked ? 409 : 200, payload);
     return;
   }
