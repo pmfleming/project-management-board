@@ -28,6 +28,9 @@ $env:SCRATCHPAD_ROOT = "D:\Code\scratchpad"
 npm run dev
 ```
 
+Set `RUST_QUALITY_LENS_ROOT` or `SCRATCHPAD_PERFORMANCE_LENS_ROOT` if those
+repos are not siblings of Scratchpad.
+
 ## Checks
 
 ```powershell

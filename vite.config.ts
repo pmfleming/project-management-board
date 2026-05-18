@@ -10,9 +10,17 @@ type JsonRecord = Record<string, unknown>;
 interface MeasurementTask {
   id: string;
   category: string;
+  subcategory: string;
   title: string;
+  description: string;
   commands?: string[][];
   output_artifacts?: string[];
+  depends_on?: string[];
+  expensive?: boolean;
+  supports_individual_run?: boolean;
+  related_profiles?: string[];
+  related_tests?: string[];
+  related_modules?: string[];
 }
 
 interface MeasurementCatalog {
@@ -45,6 +53,13 @@ interface MeasurementRun {
 
 const repoRoot = resolve(process.cwd());
 const scratchpadRoot = resolve(process.env.SCRATCHPAD_ROOT ?? join(repoRoot, "..", "scratchpad"));
+const rustQualityLensRoot = resolve(
+  process.env.RUST_QUALITY_LENS_ROOT ?? join(scratchpadRoot, "..", "rust-quality-lens"),
+);
+const scratchpadPerformanceLensRoot = resolve(
+  process.env.SCRATCHPAD_PERFORMANCE_LENS_ROOT ??
+    join(scratchpadRoot, "..", "scratchpad-performance-lens"),
+);
 const analysisRoot = join(scratchpadRoot, "target", "analysis");
 const runsPath = join(analysisRoot, "measurement_runs.json");
 const logDir = join(analysisRoot, "logs");
@@ -223,6 +238,14 @@ async function runTaskBatch(runId: string, tasks: MeasurementTask[]): Promise<vo
     appendLog(logPath, `## ${task.id} - ${task.title}\n`);
     let taskExit = 0;
     for (const rawCommand of task.commands ?? []) {
+      if (rawCommand[0] === "board-catalog") {
+        const outputPath = join(analysisRoot, "measurement_catalog.json");
+        mkdirSync(dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, `${JSON.stringify(buildCatalog(), null, 2)}\n`, "utf8");
+        appendLog(logPath, `Wrote ${outputPath}\n`);
+        artifacts.push("target/analysis/measurement_catalog.json");
+        continue;
+      }
       const command = normalizeCommand(rawCommand);
       appendLog(logPath, `$ ${command.join(" ")}\n`);
       const result = await runLoggedCommand(command, logPath, (line) => {
@@ -234,7 +257,7 @@ async function runTaskBatch(runId: string, tasks: MeasurementTask[]): Promise<vo
           failed_task_ids: [...failed],
           last_update_at: Date.now() / 1000,
         });
-      });
+      }, commandEnvironment(rawCommand[0]));
       appendLog(logPath, `\nexit=${result.code}\n\n`);
       if (result.code !== 0) {
         taskExit = result.code;
@@ -281,12 +304,14 @@ function runLoggedCommand(
   command: string[],
   logPath: string,
   onLine: (line: string) => void,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ code: number }> {
   return new Promise((resolvePromise) => {
     const child = spawn(command[0], command.slice(1), {
       cwd: scratchpadRoot,
       shell: false,
       windowsHide: true,
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let settled = false;
@@ -328,11 +353,236 @@ function runLoggedCommand(
 }
 
 async function getCatalog(): Promise<MeasurementCatalog> {
-  const catalogPath = join(analysisRoot, "measurement_catalog.json");
-  if (existsSync(catalogPath)) {
-    return JSON.parse(readFileSync(catalogPath, "utf8"));
-  }
-  return runJsonCommand([pythonPath(), "scripts/measurement_catalog.py", "--mode", "analysis"]);
+  return buildCatalog();
+}
+
+function item(
+  task: Omit<MeasurementTask, "commands" | "output_artifacts"> & {
+    commands: string[][];
+    output_artifacts: string[];
+    expensive?: boolean;
+    subcategory: string;
+    description: string;
+    related_profiles?: string[];
+    related_tests?: string[];
+    related_modules?: string[];
+  },
+): MeasurementTask {
+  return {
+    ...task,
+    depends_on: [],
+    expensive: task.expensive ?? false,
+    supports_individual_run: true,
+    related_profiles: task.related_profiles ?? [],
+    related_tests: task.related_tests ?? [],
+    related_modules: task.related_modules ?? [],
+  };
+}
+
+function buildCatalog(): MeasurementCatalog {
+  const tasks: MeasurementTask[] = [
+    item({
+      id: "quality.hotspots",
+      category: "quality",
+      subcategory: "hotspots",
+      title: "Hotspots",
+      description: "Ranks complexity risk without SLOC scoring.",
+      commands: [["rqlens", "measure", "hotspots"]],
+      output_artifacts: ["target/analysis/hotspots.json"],
+    }),
+    item({
+      id: "quality.clones",
+      category: "quality",
+      subcategory: "clones",
+      title: "Clones",
+      description: "Finds repeated code structures.",
+      commands: [["rqlens", "measure", "clones"]],
+      output_artifacts: ["target/analysis/clones.json"],
+    }),
+    item({
+      id: "quality.escape_hatches",
+      category: "quality",
+      subcategory: "safety",
+      title: "Rust Escape Hatches",
+      description:
+        "Tracks unsafe, FFI, mutable globals, raw memory, layout/linkage attributes, and lint suppressions.",
+      commands: [["rqlens", "measure", "escape-hatches"]],
+      output_artifacts: ["target/analysis/rust_escape_hatches.json"],
+    }),
+    item({
+      id: "quality.type_health",
+      category: "quality",
+      subcategory: "structure",
+      title: "Type Health",
+      description: "Ranks wide structs, large enums, broad method surfaces, and impl spread.",
+      commands: [["rqlens", "measure", "type-health"]],
+      output_artifacts: ["target/analysis/type_health.json"],
+    }),
+    item({
+      id: "performance.slowspots",
+      category: "performance",
+      subcategory: "speed",
+      title: "Broad Speed Tests",
+      description: "Runs broad benchmark triage.",
+      commands: [["splens", "measure", "slowspots"]],
+      output_artifacts: ["target/analysis/slowspots.json"],
+    }),
+    item({
+      id: "performance.frame_metrics",
+      category: "performance",
+      subcategory: "speed",
+      title: "120 Hz Frame Metrics",
+      description:
+        "Measures headless editor frame p50/p95/p99 and phase ownership against the 120 Hz budget.",
+      commands: [["splens", "measure", "frame-metrics"]],
+      output_artifacts: ["target/analysis/frame_metrics.json"],
+      related_profiles: ["ui_render_frame_profile"],
+      related_modules: ["src/app/app_state/frame.rs", "src/app/capacity_metrics.rs"],
+    }),
+    item({
+      id: "performance.search",
+      category: "performance",
+      subcategory: "searching",
+      title: "Search Speed",
+      description: "Measures search latency scaling.",
+      commands: [["splens", "measure", "search"]],
+      output_artifacts: ["target/analysis/search_speed.json"],
+      related_profiles: ["search_current_app_state", "search_all_tabs", "search_dispatch"],
+      related_tests: ["tests/search_tests.rs"],
+    }),
+    item({
+      id: "performance.capacity",
+      category: "performance",
+      subcategory: "capacity",
+      title: "Capacity Reports",
+      description:
+        "Finds first unusable ceilings for promise-health checks, including the Text Layout boundary.",
+      commands: [["splens", "measure", "capacity"]],
+      output_artifacts: ["target/analysis/capacity_report.json"],
+      expensive: true,
+    }),
+    item({
+      id: "performance.resources",
+      category: "performance",
+      subcategory: "resources",
+      title: "Resource Profiles",
+      description:
+        "Measures targeted path memory, allocation, elapsed cost, and tab phase breakdowns.",
+      commands: [["splens", "measure", "resources"]],
+      output_artifacts: ["target/analysis/resource_profiles.json"],
+      expensive: true,
+    }),
+    item({
+      id: "performance.flamegraphs",
+      category: "performance",
+      subcategory: "flamegraphs",
+      title: "Flamegraphs",
+      description: "Indexes and generates profile SVGs.",
+      commands: [["splens", "measure", "flamegraphs"]],
+      output_artifacts: ["target/analysis/flamegraphs.json"],
+      expensive: true,
+    }),
+    item({
+      id: "performance.report",
+      category: "performance",
+      subcategory: "review",
+      title: "Performance Review",
+      description:
+        "Combines targeted path probes, ceiling promise-health probes, profiles, scale-target coverage, and scenario gaps.",
+      commands: [
+        ["splens", "measure", "frame-metrics"],
+        ["splens", "measure", "capacity"],
+        ["splens", "measure", "speed-report"],
+        ["splens", "measure", "performance-review"],
+      ],
+      output_artifacts: [
+        "target/analysis/frame_metrics.json",
+        "target/analysis/speed_efficiency_report.json",
+        "target/analysis/performance_review.json",
+      ],
+      expensive: true,
+    }),
+    item({
+      id: "correctness.catalog",
+      category: "correctness",
+      subcategory: "tests",
+      title: "Correctness Catalog",
+      description: "Discovers tests by architecture layer.",
+      commands: [["rqlens", "measure", "correctness"]],
+      output_artifacts: [
+        "target/analysis/correctness_review.json",
+        "target/analysis/test_catalog.json",
+      ],
+    }),
+    item({
+      id: "correctness.all",
+      category: "correctness",
+      subcategory: "tests",
+      title: "All Tests",
+      description: "Runs the full Rust test suite.",
+      commands: [["rqlens", "measure", "correctness-run"]],
+      output_artifacts: ["target/analysis/correctness_review.json"],
+      expensive: true,
+    }),
+    item({
+      id: "map.architecture",
+      category: "map",
+      subcategory: "architecture",
+      title: "Architecture Map",
+      description: "Refreshes module health and dependency map.",
+      commands: [["rqlens", "measure", "map"]],
+      output_artifacts: ["target/analysis/map.json"],
+    }),
+    item({
+      id: "map.project_code_metrics",
+      category: "map",
+      subcategory: "code",
+      title: "Project Rust Code Metrics",
+      description:
+        "Counts application, test, and other Rust code, then samples first-parent GitHub history for line progress.",
+      commands: [["splens", "measure", "project-code"]],
+      output_artifacts: ["target/analysis/project_code_metrics.json"],
+    }),
+    item({
+      id: "quality.locality_dynamic",
+      category: "quality",
+      subcategory: "locality",
+      title: "Code Locality",
+      description:
+        "Measures dependency spread, hidden coupling, interface explicitness, and change locality.",
+      commands: [["rqlens", "measure", "locality"]],
+      output_artifacts: ["target/analysis/locality_metrics.json"],
+    }),
+    item({
+      id: "quality.locality_leverage",
+      category: "quality",
+      subcategory: "leverage",
+      title: "Architecture Leverage",
+      description:
+        "Measures reach, invariant surface, divergence pressure, and co-change ripple.",
+      commands: [["rqlens", "measure", "leverage"]],
+      output_artifacts: ["target/analysis/leverage_metrics.json"],
+    }),
+    item({
+      id: "dashboard.catalog",
+      category: "map",
+      subcategory: "dashboard",
+      title: "Measurement Catalog",
+      description: "Writes the dashboard task catalog.",
+      commands: [["board-catalog"]],
+      output_artifacts: ["target/analysis/measurement_catalog.json"],
+    }),
+  ];
+  return {
+    version: 1,
+    categories: [
+      { id: "quality", title: "Quality Review" },
+      { id: "performance", title: "Performance Review" },
+      { id: "correctness", title: "Correctness Review" },
+      { id: "map", title: "Map" },
+    ],
+    tasks,
+  };
 }
 
 function selectedTasks(tasks: MeasurementTask[], selector: string): MeasurementTask[] {
@@ -364,11 +614,46 @@ function selectorFromPath(pathname: string): string {
 }
 
 function normalizeCommand(rawCommand: string[]): string[] {
+  if (rawCommand[0] === "rqlens") {
+    return addDefaultConfig(
+      [pythonPath(), "-m", "rust_quality_lens.cli", ...rawCommand.slice(1)],
+      "rqlens.toml",
+    );
+  }
+  if (rawCommand[0] === "splens") {
+    return addDefaultConfig(
+      [pythonPath(), "-m", "scratchpad_performance_lens.cli", ...rawCommand.slice(1)],
+      "splens.toml",
+    );
+  }
   const command = [...rawCommand];
   if (command[0]?.endsWith("python.exe") && !existsSync(resolve(scratchpadRoot, command[0]))) {
     command[0] = pythonPath();
   }
   return command;
+}
+
+function addDefaultConfig(command: string[], configName: string): string[] {
+  return command.includes("--config") ? command : [...command, "--config", configName];
+}
+
+function commandEnvironment(kind: string): NodeJS.ProcessEnv {
+  if (kind === "rqlens") {
+    return withPythonPath([join(rustQualityLensRoot, "src")]);
+  }
+  if (kind === "splens") {
+    return withPythonPath([join(scratchpadPerformanceLensRoot, "src")]);
+  }
+  return process.env;
+}
+
+function withPythonPath(paths: string[]): NodeJS.ProcessEnv {
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  const existing = process.env.PYTHONPATH;
+  return {
+    ...process.env,
+    PYTHONPATH: existing ? `${paths.join(delimiter)}${delimiter}${existing}` : paths.join(delimiter),
+  };
 }
 
 function pythonPath(): string {
