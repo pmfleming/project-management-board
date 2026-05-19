@@ -1,5 +1,5 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, transformWithEsbuild, type Plugin } from "vite";
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join, normalize, resolve, sep } from "node:path";
@@ -63,6 +63,7 @@ const scratchpadPerformanceLensRoot = resolve(
 const analysisRoot = join(scratchpadRoot, "target", "analysis");
 const runsPath = join(analysisRoot, "measurement_runs.json");
 const logDir = join(analysisRoot, "logs");
+const viewerControllerPath = join(repoRoot, "src", "viewer", "data-viewer.ts");
 const commandTimeoutMs = Number(process.env.PMB_COMMAND_TIMEOUT_MS ?? 30 * 60 * 1000);
 
 let runs: MeasurementRun[] = loadRuns().map((run) =>
@@ -76,11 +77,19 @@ let runs: MeasurementRun[] = loadRuns().map((run) =>
     : run,
 );
 let activeRun: MeasurementRun | null = null;
+let warnedRunPersistence = false;
 saveRuns();
 
 function projectBoardPlugin(): Plugin {
   return {
     name: "project-management-board-api",
+    async generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: "viewer/data-viewer.js",
+        source: await compileViewerController(),
+      });
+    },
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? "/", "http://localhost");
@@ -92,6 +101,9 @@ function projectBoardPlugin(): Plugin {
           }
           if (req.method === "GET" && url.pathname === "/viewer/") {
             return sendFile(res, join(repoRoot, "public", "viewer", "index.html"));
+          }
+          if (req.method === "GET" && url.pathname === "/viewer/data-viewer.js") {
+            return sendViewerController(res);
           }
           if (url.pathname.startsWith("/target/analysis/")) {
             return serveAnalysisArtifact(url.pathname, res);
@@ -126,7 +138,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/app-package") {
-    sendJson(res, 200, await runJsonCommand([pythonPath(), "scripts/splens.py", "telemetry"]));
+    sendJson(res, 200, await appPackagePayload());
     return;
   }
   if (req.method === "GET" && url.pathname.startsWith("/api/run/") && url.pathname.endsWith("/log")) {
@@ -142,8 +154,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   if (req.method === "POST" && url.pathname === "/api/app-package/clear-buffers") {
     const script = [
       "import json, sys",
-      "from pathlib import Path",
-      `sys.path.insert(0, ${JSON.stringify(join(scratchpadRoot, "..", "scratchpad-performance-lens", "src", "scratchpad_performance_lens", "tools"))})`,
+      `sys.path.insert(0, ${JSON.stringify(appPackageToolsPath())})`,
       "from app_package import clear_app_package_buffers",
       "print(json.dumps(clear_app_package_buffers()))",
     ].join("; ");
@@ -161,6 +172,20 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return;
   }
   sendJson(res, 404, { error: "unknown endpoint" });
+}
+
+async function appPackagePayload(): Promise<JsonRecord> {
+  const script = [
+    "import json, sys",
+    `sys.path.insert(0, ${JSON.stringify(appPackageToolsPath())})`,
+    "from app_package import app_package_payload",
+    "print(json.dumps(app_package_payload()))",
+  ].join("; ");
+  return runJsonCommand([pythonPath(), "-c", script]);
+}
+
+function appPackageToolsPath(): string {
+  return join(scratchpadPerformanceLensRoot, "src", "scratchpad_performance_lens", "tools");
 }
 
 async function startRun(pathname: string, res: ServerResponse): Promise<void> {
@@ -709,8 +734,15 @@ function loadRuns(): MeasurementRun[] {
 }
 
 function saveRuns(): void {
-  mkdirSync(dirname(runsPath), { recursive: true });
-  writeFileSync(runsPath, `${JSON.stringify(runs.slice(-100), null, 2)}\n`, "utf8");
+  try {
+    mkdirSync(dirname(runsPath), { recursive: true });
+    writeFileSync(runsPath, `${JSON.stringify(runs.slice(-100), null, 2)}\n`, "utf8");
+  } catch (error) {
+    if (!warnedRunPersistence) {
+      warnedRunPersistence = true;
+      console.warn(`Unable to persist measurement runs to ${runsPath}: ${errorMessage(error)}`);
+    }
+  }
 }
 
 function updateRun(runId: string, changes: Partial<MeasurementRun>): void {
@@ -726,6 +758,10 @@ function updateRun(runId: string, changes: Partial<MeasurementRun>): void {
 
 function appendLog(logPath: string, text: string): void {
   writeFileSync(logPath, text, { encoding: "utf8", flag: "a" });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function progressDetail(line: string): string {
@@ -772,6 +808,26 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
     "Content-Length": body.length,
   });
   res.end(body);
+}
+
+async function sendViewerController(res: ServerResponse): Promise<void> {
+  const body = Buffer.from(await compileViewerController(), "utf8");
+  res.writeHead(200, {
+    "Content-Type": "text/javascript; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Length": body.length,
+  });
+  res.end(body);
+}
+
+async function compileViewerController(): Promise<string> {
+  const source = readFileSync(viewerControllerPath, "utf8");
+  const result = await transformWithEsbuild(source, viewerControllerPath, {
+    format: "iife",
+    loader: "ts",
+    target: "es2022",
+  });
+  return result.code;
 }
 
 function setCors(res: ServerResponse): void {

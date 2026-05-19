@@ -1,3 +1,4 @@
+// @ts-nocheck
 (function () {
     const viewerVersion = window.SCRATCHPAD_VIEWER_VERSION || "dev";
     const sources = {
@@ -45,6 +46,7 @@
         selectedModule: null,
         selectedFlamegraph: null,
         selectedRun: null,
+        selectedRunLogText: "",
         selectedLayer: null,
         selectedCorrectnessCategory: null,
         selectedPerformanceScenarioId: null,
@@ -284,6 +286,96 @@
         target.innerHTML = cards.join("");
     }
 
+    function confidenceTone(score, fallback = "ok") {
+        if (!Number.isFinite(Number(score))) return "stale";
+        if (score >= 80) return "ok";
+        if (score >= 58) return "watch";
+        return fallback === "bad" ? "bad" : "bad";
+    }
+
+    function healthConfidence(status) {
+        if (status === "ok") return 92;
+        if (status === "watch") return 68;
+        if (status === "bad") return 34;
+        return 48;
+    }
+
+    function averageConfidence(items) {
+        const values = items.map((item) => Number(item)).filter(Number.isFinite);
+        if (!values.length) return 0;
+        return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+    }
+
+    function confidenceSparkline(values, tone = "ok") {
+        if (!values || values.length < 2) return "";
+        const w = 164;
+        const h = 34;
+        const pad = 2;
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = max - min || 1;
+        const points = values.map((value, index) => {
+            const x = pad + (index * (w - pad * 2)) / Math.max(1, values.length - 1);
+            const y = h - pad - ((value - min) / range) * (h - pad * 2);
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(" ");
+        return `<svg class="confidence-metric__spark confidence-metric__spark--${escapeHtml(tone)}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+            <polyline points="${points}" />
+        </svg>`;
+    }
+
+    function confidenceMetric({ label, value, detail = "", tone = "ok", series = null }) {
+        return `<div class="confidence-metric confidence-metric--${escapeHtml(tone)}">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value)}</strong>
+            ${detail ? `<em>${escapeHtml(detail)}</em>` : ""}
+            ${confidenceSparkline(series, tone)}
+        </div>`;
+    }
+
+    function renderConfidencePanel(targetId, { label, score, headline, detail, metrics = [], action = null, tone = null }) {
+        const target = byId(targetId);
+        if (!target) return;
+        const resolvedScore = Number.isFinite(Number(score)) ? clamp(Math.round(Number(score)), 0, 100) : null;
+        const resolvedTone = tone || confidenceTone(resolvedScore);
+        const actionMarkup = action
+            ? `<button type="button" class="confidence-panel__action" ${action.tab ? `data-confidence-tab="${escapeHtml(action.tab)}"` : ""} ${action.runCategory ? `data-confidence-run-category="${escapeHtml(action.runCategory)}"` : ""} ${action.runItem ? `data-confidence-run-item="${escapeHtml(action.runItem)}"` : ""} ${action.runAll ? "data-confidence-run-all=\"true\"" : ""} ${action.clickId ? `data-confidence-click-id="${escapeHtml(action.clickId)}"` : ""} ${action.scrollTo ? `data-confidence-scroll="${escapeHtml(action.scrollTo)}"` : ""}>${escapeHtml(action.label)}</button>`
+            : "";
+        target.className = `confidence-panel confidence-panel--${resolvedTone}`;
+        target.innerHTML = `<section class="confidence-panel__inner" aria-label="${escapeHtml(label)} confidence">
+            <div class="confidence-panel__score">
+                <span>${escapeHtml(label)}</span>
+                <strong>${resolvedScore == null ? "-" : resolvedScore}</strong>
+                <em>confidence</em>
+            </div>
+            <div class="confidence-panel__story">
+                <p>${escapeHtml(detail)}</p>
+                ${actionMarkup}
+            </div>
+            <div class="confidence-panel__metrics">
+                ${metrics.map(confidenceMetric).join("")}
+            </div>
+        </section>`;
+        target.querySelectorAll("[data-confidence-tab]").forEach((button) => {
+            button.addEventListener("click", () => document.querySelector(`.tab[data-tab="${button.dataset.confidenceTab}"]`)?.click());
+        });
+        target.querySelectorAll("[data-confidence-run-category]").forEach((button) => {
+            button.addEventListener("click", () => document.querySelector(`.run-button[data-run-category="${button.dataset.confidenceRunCategory}"]`)?.click());
+        });
+        target.querySelectorAll("[data-confidence-run-item]").forEach((button) => {
+            button.addEventListener("click", () => document.querySelector(`.run-button[data-run-item="${button.dataset.confidenceRunItem}"]`)?.click());
+        });
+        target.querySelectorAll("[data-confidence-run-all]").forEach((button) => {
+            button.addEventListener("click", () => document.querySelector(".run-button[data-run]")?.click());
+        });
+        target.querySelectorAll("[data-confidence-click-id]").forEach((button) => {
+            button.addEventListener("click", () => byId(button.dataset.confidenceClickId)?.click());
+        });
+        target.querySelectorAll("[data-confidence-scroll]").forEach((button) => {
+            button.addEventListener("click", () => byId(button.dataset.confidenceScroll)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+        });
+    }
+
     function renderTable(targetId, headers, rows) {
         const target = byId(targetId);
         if (!target) return;
@@ -478,6 +570,7 @@
     function renderQualityOverview() {
         const target = byId("quality-overview");
         if (!target) return;
+        renderQualityConfidence();
 
         const hotspots = state.hotspots || [];
         const clones = state.clones || [];
@@ -1929,23 +2022,29 @@
             const ceilingCount = Number(scenario.ceilings_reached || 0);
             const active = scenario.id === selected.id;
             const color = performancePromiseColor(scenario.id);
-            const pressure = [
-                missCount ? `${formatNumber.format(missCount)} over` : "",
-                ceilingCount ? `${formatNumber.format(ceilingCount)} ceilings` : "",
-            ].filter(Boolean).join(" - ");
+            const metric = performancePromisePillMetric(scenario, status);
             return `<button type="button" class="promise-tab promise-tab--${status.cls} ${active ? "is-active" : ""}" role="tab" aria-selected="${active ? "true" : "false"}" title="${escapeHtml(scenario.title || scenario.id || "Scenario")}" data-promise-tab="${escapeHtml(scenario.id)}" style="--promise-color:${escapeHtml(color)}">
                     <strong>${escapeHtml(scenario.title || scenario.id || "Scenario")}</strong>
-                    <span>${escapeHtml(pressure || status.label)}</span>
+                    <span><b>${escapeHtml(metric.value)}</b> ${escapeHtml(metric.label)}</span>
                 </button>`;
         }).join("")}
-        </div>
-        ${renderScenarioPromisePanel(selected)}`;
+        </div>`;
     }
 
-    function renderScenarioPromisePanel(scenario) {
-        return `<section class="promise-tab-panel promise-tab-panel--summary" role="tabpanel" aria-label="${escapeHtml(scenario.title || scenario.id || "Scenario")} promise">
-            <p class="promise-tab-promise">${escapeHtml(scenario.promise || "No promise text loaded.")}</p>
-        </section>`;
+    function performancePromisePillMetric(scenario, status) {
+        const missCount = Number(scenario.budget_misses || 0);
+        if (missCount) {
+            return { value: formatNumber.format(missCount), label: "over budget" };
+        }
+        const ceilingCount = Number(scenario.ceilings_reached || 0);
+        if (ceilingCount) {
+            return { value: formatNumber.format(ceilingCount), label: ceilingCount === 1 ? "ceiling" : "ceilings" };
+        }
+        const coverage = Number(scenario.coverage_score ?? 0);
+        if (coverage > 0) {
+            return { value: `${formatNumber.format(Math.round(coverage * 100))}%`, label: "covered" };
+        }
+        return { value: status.label, label: "status" };
     }
 
     function renderScenarioProgressCells(scenario) {
@@ -2569,34 +2668,51 @@
     }
 
     function renderPerformanceOverview() {
-        const target = byId("performance-verdict");
-        if (!target) return;
         const digest = computePerformanceDigest();
+        renderPerformanceConfidence(digest);
+    }
+
+    function computePerformanceConfidenceSignal(digest = computePerformanceDigest()) {
+        const scenarioTotal = Number(digest.scenarioTotal || 0);
+        const metRatio = scenarioTotal ? Number(digest.scenariosMet || 0) / scenarioTotal : 0;
+        const budgetPenalty = Number(digest.summaryBudgetMisses || 0) * 10;
+        const ceilingPenalty = Number(digest.nearCeilings || 0) * 8;
+        const gapPenalty = Math.max(0, 6 - Number(digest.measurementGapsClosed || 0)) * 4;
+        const confidence = scenarioTotal
+            ? clamp(Math.round((metRatio * 100) - budgetPenalty - ceilingPenalty - gapPenalty), 10, 96)
+            : 0;
         const worst = digest.worstOverBudgetRow;
         const worstRatio = worst ? budgetRatio(worst) : 0;
-        const scenarioCls = digest.scenarioTotal && digest.scenariosMet === digest.scenarioTotal ? "ok" : "watch";
-        const cells = [
-            { label: "Verdict", value: `${formatNumber.format(digest.scenariosMet)} of ${formatNumber.format(digest.scenarioTotal)} promises met`, cls: scenarioCls, sentence: true },
-            { label: "Budget misses", value: formatNumber.format(digest.summaryBudgetMisses), cls: digest.summaryBudgetMisses ? "bad" : "ok" },
-            { label: "Near ceilings", value: formatNumber.format(digest.nearCeilings), cls: digest.nearCeilings ? "watch" : "ok" },
-            {
-                label: "Measured gaps",
-                value: `${formatNumber.format(digest.measurementGapsClosed)} of 6 closed`,
-                cls: digest.measurementGapsClosed >= 6 ? "ok" : "watch",
-            },
-            {
-                label: "Worst latency",
-                value: worst && worstRatio > 1 ? `${formatMs(latencyMs(worst))} (${formatRatio(worstRatio)} budget)` : "All within budget",
-                cls: worst && worstRatio > 1 ? "bad" : "ok",
-            },
-            { label: "Peak working set", value: digest.peakWorkingSet ? formatBytes(digest.peakWorkingSet) : "-", cls: "neutral" },
-        ];
-        target.innerHTML = `<section class="performance-headline-strip" aria-label="Performance headline results" data-jump-target="performance-headline-charts">
-            ${cells.map((cell) => `<div class="performance-headline-cell performance-headline-cell--${cell.cls}${cell.sentence ? " performance-headline-cell--sentence" : ""}">
-                <span>${escapeHtml(cell.label)}</span>
-                <strong>${escapeHtml(cell.value)}</strong>
-            </div>`).join("")}
-        </section>`;
+        const detail = worst && worstRatio > 1
+            ? `${performanceRowLabel(worst)} is ${formatRatio(worstRatio)} over budget at ${formatMs(latencyMs(worst))}.`
+            : `${formatNumber.format(digest.scenariosMet)} of ${formatNumber.format(scenarioTotal)} promises met, ${formatNumber.format(digest.measurementGapsClosed)} measurement gaps closed.`;
+        return {
+            confidence,
+            detail,
+            scenarioTotal,
+            worst,
+            worstRatio,
+        };
+    }
+
+    function renderPerformanceConfidence(digest) {
+        const signal = computePerformanceConfidenceSignal(digest);
+        renderConfidencePanel("performance-confidence", {
+            label: "Performance",
+            score: signal.confidence,
+            headline: "",
+            detail: signal.detail,
+            action: signal.scenarioTotal
+                ? { label: digest.summaryBudgetMisses ? "Inspect evidence" : "Review probes", scrollTo: digest.summaryBudgetMisses ? "performance-promise-board" : "performance-measurement-gaps" }
+                : { label: "Refresh Performance", runCategory: "performance" },
+            metrics: [
+                { label: "Promises met", value: `${formatNumber.format(digest.scenariosMet)}/${formatNumber.format(signal.scenarioTotal)}`, detail: "scenario coverage", tone: signal.scenarioTotal && digest.scenariosMet === signal.scenarioTotal ? "ok" : "watch" },
+                { label: "Budget misses", value: formatNumber.format(digest.summaryBudgetMisses), detail: "latency checks", tone: digest.summaryBudgetMisses ? "bad" : "ok", series: runMetricSeries("capacity_risk_count") },
+                { label: "Near ceilings", value: formatNumber.format(digest.nearCeilings), detail: "capacity probes", tone: digest.nearCeilings ? "watch" : "ok" },
+                { label: "Worst latency", value: signal.worst && signal.worstRatio > 0 ? `${formatRatio(signal.worstRatio)}x` : "-", detail: signal.worst ? "of budget" : "no breach", tone: signal.worstRatio > 1 ? "bad" : signal.worstRatio > 0.85 ? "watch" : "ok" },
+                { label: "Peak memory", value: digest.peakWorkingSet ? formatBytes(digest.peakWorkingSet) : "-", detail: "working set", tone: digest.peakWorkingSet ? "watch" : "stale" },
+            ],
+        });
     }
 
     function renderPerformanceMeasurementGaps() {
@@ -4165,7 +4281,7 @@
     }
 
     function renderOverview() {
-        renderHealthGauges();
+        renderOverviewConfidence();
         renderRiskTreemap();
         renderProjectCodeMetrics();
         renderTopConcerns();
@@ -4179,46 +4295,6 @@
         return { label: "OK", cls: "ok" };
     }
 
-    function renderGaugeCard({ id, title, value, status, driver, sparkline, deltaInfo }) {
-        const s = classifyStatus(status);
-        const delta = deltaInfo
-            ? `<span class="gauge-card__delta gauge-card__delta--${deltaInfo.direction}">${escapeHtml(deltaInfo.label)}</span>`
-            : `<span class="gauge-card__delta">no history</span>`;
-        const spark = sparkline && sparkline.length >= 2 ? renderSparkline(sparkline) : "";
-        return `<div class="gauge-card gauge-card--${s.cls}" id="${id}">
-            <div class="gauge-card__title">
-                <span>${escapeHtml(title)}</span>
-                <span class="gauge-card__status gauge-card__status--${s.cls}">${s.label}</span>
-            </div>
-            <div class="gauge-card__metric">
-                <span class="gauge-card__value">${escapeHtml(value)}</span>
-                ${delta}
-            </div>
-            <div class="gauge-card__driver">${escapeHtml(driver || "")}</div>
-            ${spark}
-        </div>`;
-    }
-
-    function renderSparkline(values) {
-        if (!values.length) return "";
-        const w = 200, h = 44, pad = 2;
-        const min = Math.min(...values);
-        const max = Math.max(...values);
-        const range = max - min || 1;
-        const points = values.map((v, i) => {
-            const x = pad + (i * (w - pad * 2)) / Math.max(1, values.length - 1);
-            const y = h - pad - ((v - min) / range) * (h - pad * 2);
-            return `${x.toFixed(1)},${y.toFixed(1)}`;
-        }).join(" ");
-        const last = values[values.length - 1];
-        const lastX = w - pad;
-        const lastY = h - pad - ((last - min) / range) * (h - pad * 2);
-        return `<svg class="gauge-card__sparkline" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-            <polyline fill="none" stroke="#6fd0ff" stroke-width="2" points="${points}" />
-            <circle cx="${lastX}" cy="${lastY.toFixed(1)}" r="2.5" fill="#6fd0ff" />
-        </svg>`;
-    }
-
     function runMetricSeries(metricKey) {
         // Pull headline metric values from finished runs in chronological order.
         return state.runs
@@ -4228,22 +4304,56 @@
             .slice(-12);
     }
 
-    function describeDelta(series, { higherIsBetter = false } = {}) {
-        if (!series || series.length < 2) return null;
-        const last = series[series.length - 1];
-        const prev = series[series.length - 2];
-        if (prev === 0 && last === 0) return null;
-        const diff = last - prev;
-        const pct = prev === 0 ? null : (diff / Math.abs(prev)) * 100;
-        const arrow = diff === 0 ? "" : diff > 0 ? "▲" : "▼";
-        const direction = diff === 0 ? "flat" : (diff > 0 ? (higherIsBetter ? "down" : "up") : (higherIsBetter ? "up" : "down"));
-        const label = pct == null ? `${arrow} ${formatNumber.format(diff)}` : `${arrow} ${formatNumber.format(Math.abs(pct))}%`;
-        return { direction, label };
+    function computeQualityConfidenceSignal() {
+        const hotspots = state.hotspots || [];
+        const clones = state.clones || [];
+        const typeHealth = state.typeHealth || [];
+        const escapeHatches = state.escapeHatches || [];
+        const locality = state.locality || [];
+        const leverage = state.leverage || [];
+        const highHotspots = hotspots.filter((item) => qualityScore(item) >= 600).length;
+        const watchHotspots = hotspots.filter((item) => {
+            const score = qualityScore(item);
+            return score >= 300 && score < 600;
+        }).length;
+        const cloneRisks = clones.filter((item) => Number(item.score || 0) >= 40).length;
+        const structuralRisks = typeHealth.filter((item) => typeHealthRisk(item) >= 40).length;
+        const escapeUses = escapeHatches.reduce((sum, item) => sum + Number(item.total_count || 0), 0);
+        const localityRiskCount = locality.filter((item) => localityRisk(item) >= 30).length;
+        const leverageRiskCount = leverage.filter((item) => leverageRisk(item) >= 40).length;
+        const dataLoaded = hotspots.length || clones.length || typeHealth.length || escapeHatches.length || locality.length || leverage.length;
+        const penalty =
+            Math.min(36, highHotspots * 8)
+            + Math.min(18, watchHotspots * 0.15)
+            + Math.min(16, cloneRisks * 5)
+            + Math.min(10, structuralRisks * 2)
+            + Math.min(8, escapeUses / 10)
+            + Math.min(8, (localityRiskCount + leverageRiskCount) * 2);
+        const confidence = dataLoaded ? clamp(Math.round(96 - penalty), 12, 96) : 0;
+        const worstHotspot = [...hotspots].sort((left, right) => qualityScore(right) - qualityScore(left))[0];
+        const detail = worstHotspot
+            ? `Highest hotspot is ${(worstHotspot.name || "").split(/[\\/]/).pop()} at ${formatNumber.format(qualityScore(worstHotspot))}.`
+            : dataLoaded
+                ? `${formatNumber.format(cloneRisks)} risky clone groups, ${formatNumber.format(structuralRisks)} structural watch items.`
+                : "Run the quality refresh to populate hotspots, clones, structural, locality, and leverage data.";
+
+        return {
+            confidence,
+            detail,
+            dataLoaded,
+            highHotspots,
+            watchHotspots,
+            cloneRisks,
+            structuralRisks,
+            localityRiskCount,
+            leverageRiskCount,
+        };
     }
 
     function computeQualityHealth() {
         const hotspots = state.hotspots || [];
         const clones = state.clones || [];
+        const confidence = computeQualityConfidenceSignal();
         const bad = hotspots.filter((h) => qualityScore(h) >= 600).length;
         const warn = hotspots.filter((h) => {
             const s = qualityScore(h);
@@ -4262,6 +4372,7 @@
         return {
             status,
             value: String(total),
+            confidence: confidence.confidence,
             driver,
             series: runMetricSeries("quality_risk_count"),
         };
@@ -4272,6 +4383,7 @@
         const summary = speed.summary || {};
         const reviewSummary = state.performanceReview?.summary || {};
         const triageSummary = speed.triage_summary || null;
+        const performance = computePerformanceConfidenceSignal();
         const overBudget = summary.over_budget_latency ?? 0;
         const implementations = reviewSummary.implementation_count ?? 0;
         const ceilings = summary.near_failure_ceilings ?? 0;
@@ -4296,7 +4408,8 @@
         return {
             status,
             value,
-            driver,
+            confidence: performance.confidence,
+            driver: performance.detail || driver,
             series: runMetricSeries("capacity_risk_count"),
         };
     }
@@ -4408,51 +4521,68 @@
         return errorLine || accessLine || lines[lines.length - 1] || "cargo test failed";
     }
 
-    function renderHealthGauges() {
-        const target = byId("overview-health");
-        if (!target) return;
+    function renderOverviewConfidence() {
         const quality = computeQualityHealth();
         const capacity = computeCapacityHealth();
         const fps = computeFpsHealth();
         const correctness = computeCorrectnessHealth();
-        target.innerHTML = [
-            renderGaugeCard({
-                id: "gauge-quality",
-                title: "Quality",
-                value: quality.value,
-                status: quality.status,
-                driver: quality.driver,
-                sparkline: quality.series,
-                deltaInfo: describeDelta(quality.series),
-            }),
-            renderGaugeCard({
-                id: "gauge-capacity",
-                title: "Capacity",
-                value: capacity.value,
-                status: capacity.status,
-                driver: capacity.driver,
-                sparkline: capacity.series,
-                deltaInfo: describeDelta(capacity.series),
-            }),
-            renderGaugeCard({
-                id: "gauge-fps",
-                title: "FPS",
-                value: fps.value,
-                status: fps.status,
-                driver: fps.driver,
-                sparkline: fps.series,
-                deltaInfo: describeDelta(fps.series, { higherIsBetter: true }),
-            }),
-            renderGaugeCard({
-                id: "gauge-correctness",
-                title: "Correctness",
-                value: correctness.value,
-                status: correctness.status,
-                driver: correctness.driver,
-                sparkline: correctness.series,
-                deltaInfo: describeDelta(correctness.series, { higherIsBetter: true }),
-            }),
-        ].join("");
+        const healths = [
+            { label: "Quality", ...quality, tab: "quality-review" },
+            { label: "Capacity", ...capacity, tab: "performance-review" },
+            { label: "FPS", ...fps, tab: "performance-review" },
+            { label: "Correctness", ...correctness, tab: "correctness-review" },
+        ];
+        const healthConfidenceValue = (item) => item.confidence ?? healthConfidence(item.status);
+        const confidence = averageConfidence(healths.map(healthConfidenceValue));
+        const priority = healths
+            .map((item) => ({ ...item, confidence: healthConfidenceValue(item) }))
+            .sort((a, b) => a.confidence - b.confidence)[0];
+        const badCount = healths.filter((item) => item.status === "bad").length;
+        const watchCount = healths.filter((item) => item.status === "watch").length;
+        const headline = badCount
+            ? `${priority.label} is the confidence limiter`
+            : watchCount
+                ? `${priority.label} is worth watching`
+                : "Project signals are holding";
+        const detail = priority?.driver || "All headline signals are loaded.";
+        renderConfidencePanel("overview-confidence", {
+            label: "Project",
+            score: confidence,
+            headline,
+            detail,
+            tone: confidenceTone(confidence, badCount ? "bad" : "ok"),
+            action: priority?.tab
+                ? { label: `Open ${priority.label}`, tab: priority.tab }
+                : null,
+            metrics: healths.map((item) => ({
+                label: item.label,
+                value: String(healthConfidenceValue(item)),
+                detail: classifyStatus(item.status).label,
+                tone: classifyStatus(item.status).cls,
+                series: item.series,
+            })),
+        });
+    }
+
+    function renderQualityConfidence() {
+        const clones = state.clones || [];
+        const typeHealth = state.typeHealth || [];
+        const quality = computeQualityConfidenceSignal();
+        renderConfidencePanel("quality-confidence", {
+            label: "Quality",
+            score: quality.confidence,
+            headline: "",
+            detail: quality.detail,
+            action: quality.dataLoaded
+                ? { label: "Open quality datasets", scrollTo: "quality-datasets" }
+                : { label: "Refresh Quality", runCategory: "quality" },
+            metrics: [
+                { label: "High hotspots", value: formatNumber.format(quality.highHotspots), detail: `${formatNumber.format(quality.watchHotspots)} watch`, tone: quality.highHotspots ? "bad" : quality.watchHotspots ? "watch" : "ok", series: runMetricSeries("quality_risk_count") },
+                { label: "Clone debt", value: formatNumber.format(quality.cloneRisks), detail: `${formatNumber.format(clones.length)} groups`, tone: quality.cloneRisks ? "bad" : "ok" },
+                { label: "Structure", value: formatNumber.format(quality.structuralRisks), detail: `${formatNumber.format(typeHealth.length)} types`, tone: quality.structuralRisks ? "watch" : "ok" },
+                { label: "Locality", value: formatNumber.format(quality.localityRiskCount + quality.leverageRiskCount), detail: "risk modules", tone: quality.localityRiskCount || quality.leverageRiskCount ? "watch" : "ok" },
+            ],
+        });
     }
 
     function moduleScoreFor(module, metric) {
@@ -4840,6 +4970,7 @@
         const showAll = byId("correctness-show-all")?.checked ?? false;
         const layerFilter = state.selectedLayer;
         const categoryFilter = state.selectedCorrectnessCategory;
+        renderCorrectnessConfidence(payload);
         let filtered = tests.filter((item) => matchesFilter(item, query));
         if (layerFilter) {
             filtered = filtered.filter((item) => item.layer === layerFilter);
@@ -4851,7 +4982,6 @@
             filtered = filtered.filter((item) => item.last_status === "failed" || item.last_status === "unknown");
         }
         renderCorrectnessOverview(payload, filtered, { query, showAll, layerFilter, categoryFilter });
-        renderCorrectnessSummary(payload);
         renderTable(
             "correctness-layers",
             ["Layer", "Total", "Passed", "Failed", "Skipped", "Unknown"],
@@ -4878,6 +5008,39 @@
             </tr>`)
         );
         attachCorrectnessCategoryFilterHandlers(byId("correctness-table"));
+    }
+
+    function renderCorrectnessConfidence(payload) {
+        const summary = payload?.summary || {};
+        const tests = payload?.tests || [];
+        const total = Number(summary.test_count ?? tests.length ?? 0);
+        const failed = Number(summary.failed ?? tests.filter((test) => test.last_status === "failed").length ?? 0);
+        const unknown = Number(summary.unknown ?? tests.filter((test) => test.last_status === "unknown").length ?? 0);
+        const runFailed = correctnessRunFailed(summary);
+        const passing = Math.max(0, total - failed - unknown);
+        const categoryCount = Object.keys(countBy(tests, inlineTestCategory)).length;
+        const confidence = total
+            ? clamp(Math.round((passing / total) * 100 - failed * 12 - unknown * 2 - (runFailed ? 35 : 0)), 8, 98)
+            : 0;
+        const detail = runFailed
+            ? compactCorrectnessRunMessage(correctnessLastRun(summary))
+            : `${formatNumber.format(passing)} passing, ${formatNumber.format(failed)} failed, ${formatNumber.format(unknown)} unknown.`;
+        renderConfidencePanel("correctness-confidence", {
+            label: "Correctness",
+            score: confidence,
+            headline: "",
+            detail,
+            action: runFailed || failed || unknown
+                ? { label: "Review tests", scrollTo: "correctness-table" }
+                : { label: "Run All Tests", runItem: "correctness.all" },
+            metrics: [
+                { label: "Passed", value: formatNumber.format(passing), detail: `${formatNumber.format(total)} total`, tone: "ok", series: runMetricSeries("tests_passed") },
+                { label: "Failed", value: formatNumber.format(failed), detail: runFailed ? "run failed" : "tests", tone: failed || runFailed ? "bad" : "ok" },
+                { label: "Unknown", value: formatNumber.format(unknown), detail: "not observed", tone: unknown ? "watch" : "ok" },
+                { label: "Layers", value: formatNumber.format(payload?.layers?.length || 0), detail: "mapped", tone: payload?.layers?.length ? "ok" : "stale" },
+                { label: "Coverage", value: formatNumber.format(categoryCount), detail: "areas", tone: categoryCount ? "ok" : "stale" },
+            ],
+        });
     }
 
     function renderCorrectnessOverview(payload, visibleTests, filters) {
@@ -4939,56 +5102,6 @@
                 : `<strong>${formatNumber.format(visibleTests.length)} of ${formatNumber.format(tests.length)} tests visible.</strong>`}`;
         }
         attachCorrectnessCategoryFilterHandlers(target);
-    }
-
-    function renderCorrectnessSummary(payload) {
-        const target = byId("correctness-summary");
-        if (!target) return;
-        const summary = payload.summary || {};
-        const layers = payload.layers || [];
-        const tests = payload.tests || [];
-        const statusCounts = countBy(tests, (item) => item.last_status || "unknown");
-        const total = summary.test_count ?? tests.length;
-        const failed = summary.failed ?? statusCounts.failed ?? 0;
-        const unknown = summary.unknown ?? statusCounts.unknown ?? 0;
-        const passed = statusCounts.passed ?? Math.max(0, total - failed - unknown);
-        const passRate = total ? Math.round((passed / total) * 100) : 0;
-        const categoryCounts = countBy(tests, inlineTestCategory);
-        const categoryEntries = sortedCountEntries(categoryCounts);
-        const layerCount = summary.layers ?? layers.length;
-        const runFailed = correctnessRunFailed(summary);
-        const lastRunMessage = compactCorrectnessRunMessage(correctnessLastRun(summary));
-        const outcome = runFailed ? "run failed" : failed > 0 ? "failing" : unknown > 0 ? "needs review" : "passing";
-        const heroTone = runFailed || failed > 0 ? "bad" : unknown > 0 ? "warn" : "ok";
-
-        target.innerHTML = `<section class="correctness-summary-card correctness-summary-card--hero correctness-summary-card--${heroTone}">
-                <span class="correctness-summary-card__label">Health</span>
-                <strong>${escapeHtml(outcome)}</strong>
-                <div class="correctness-pass-meter" aria-label="${passRate}% pass rate">
-                    <span style="width:${passRate}%"></span>
-                </div>
-                <div class="correctness-summary-card__meta">
-                    <span>${formatNumber.format(passed)} passed</span>
-                    <span>${formatNumber.format(passRate)}% pass rate</span>
-                </div>
-            </section>
-            ${correctnessSummaryCard("Tests", total, "Total cataloged test entries")}
-            ${correctnessSummaryCard("Coverage Areas", categoryEntries.length, categoryEntries.slice(0, 2).map(([label, count]) => `${label} ${formatNumber.format(count)}`).join(" · ") || "No categories")}
-            ${correctnessSummaryCard("Layers", layerCount, "Architectural groups represented")}
-            ${correctnessSummaryCard(
-                "Attention",
-                runFailed ? "Run failed" : `${formatNumber.format(failed)} failed`,
-                runFailed ? lastRunMessage : `${formatNumber.format(unknown)} unknown`,
-                runFailed || failed ? "bad" : unknown ? "warn" : "ok"
-            )}`;
-    }
-
-    function correctnessSummaryCard(label, value, detail, tone = "neutral") {
-        return `<section class="correctness-summary-card correctness-summary-card--${escapeHtml(tone)}">
-            <span class="correctness-summary-card__label">${escapeHtml(label)}</span>
-            <strong>${escapeHtml(value)}</strong>
-            <span class="correctness-summary-card__detail">${escapeHtml(detail)}</span>
-        </section>`;
     }
 
     function correctnessOverviewCard(title, status, metrics) {
@@ -5078,6 +5191,7 @@
         const running = runs.filter((item) => item.status === "running" || item.status === "queued").length;
         const failed = runs.filter((item) => item.status === "failed").length;
         const activeRun = runs.find((item) => item.status === "running" || item.status === "queued");
+        renderRunLogConfidence(runs, running, failed, activeRun);
         renderSummary("run-log-summary", [
             metricCard("Runs", runs.length),
             metricCard("Running", running),
@@ -5085,23 +5199,98 @@
             metricCard("Latest", runs[0]?.status || "-"),
             activeProgressPill(activeRun),
         ]);
-        renderTable(
-            "run-log-table",
-            ["Run", "Selector", "Tasks", "Progress", "Status", "Duration", "Artifacts"],
-            runs.map((item) => `<tr class="run-row" data-run-id="${escapeHtml(item.id)}">
-                <td><code>${escapeHtml(item.id)}</code></td>
-                <td>${escapeHtml(item.selector || "-")}</td>
-                <td>${renderPills(item.task_ids || [])}</td>
-                <td>${renderRunProgress(item, "table")}</td>
-                <td><span class="pill">${escapeHtml(item.status || "-")}</span></td>
-                <td>${item.duration_seconds == null ? "-" : `${formatNumber.format(item.duration_seconds)} s`}</td>
-                <td>${renderPills(item.artifacts || [])}</td>
-            </tr>`)
-        );
-        byId("run-log-table").querySelectorAll(".run-row").forEach((row) => {
+        const historyTarget = byId("run-log-table");
+        historyTarget.innerHTML = runs.map((item) => {
+            const isSelected = state.selectedRun === item.id;
+            const logText = state.selectedRunLogText || "Loading run log...";
+            const runStatusClass = runStatusTone(item);
+            const taskCount = (item.task_ids || []).length;
+            const artifactCount = (item.artifacts || []).length;
+            return `<button type="button" class="run-row run-history-card run-history-card--${runStatusClass} ${isSelected ? "is-active" : ""}" data-run-id="${escapeHtml(item.id)}" aria-expanded="${isSelected ? "true" : "false"}">
+            <div class="run-history-card__topline">
+                <code>${escapeHtml(item.id)}</code>
+                <span class="pill">${escapeHtml(item.status || "-")}</span>
+                <span>${item.duration_seconds == null ? "Duration -" : `${formatNumber.format(item.duration_seconds)} s`}</span>
+            </div>
+            <span class="run-history-card__selector">${escapeHtml(item.selector || "-")}</span>
+            <div class="run-history-card__progress">${renderRunProgress(item, "table")}</div>
+            <div class="run-history-card__section run-history-card__section--tasks">
+                <strong><span>Tasks</span><em>${formatNumber.format(taskCount)}</em></strong>
+                <span class="run-history-card__pills">${renderRunTaskPills(item)}</span>
+            </div>
+            <div class="run-history-card__section run-history-card__section--artifacts ${artifactCount ? "has-artifacts" : "has-no-artifacts"}">
+                <strong><span>Artifacts</span><em>${formatNumber.format(artifactCount)}</em></strong>
+                <span class="run-history-card__pills">${renderRunArtifactPills(item)}</span>
+            </div>
+        </button>${isSelected ? `<div class="run-history-log-panel" data-run-log-panel="${escapeHtml(item.id)}">
+            <div class="run-history-log-panel__header">
+                <strong>Log output</strong>
+                <span>${escapeHtml(item.id)}</span>
+            </div>
+            <div class="run-progress-detail">${renderRunProgress(item, "detail")}</div>
+            <pre id="run-log-output" class="log-output">${escapeHtml(logText)}</pre>
+        </div>` : ""}`;
+        }).join("");
+        historyTarget.querySelectorAll(".run-row").forEach((row) => {
             row.addEventListener("click", () => loadRunLog(row.dataset.runId));
         });
-        renderSelectedRunProgress();
+    }
+
+    function renderRunLogConfidence(runs, running, failed, activeRun) {
+        const completed = runs.filter((item) => item.status === "completed").length;
+        const total = runs.length;
+        const latest = runs[0] || null;
+        const confidence = total
+            ? clamp(Math.round((completed / total) * 100 - failed * 5 + running * 4), 12, 96)
+            : 0;
+        const detail = activeRun
+            ? `${activeRun.id} is ${activeRun.status}; ${runProgress(activeRun).done} of ${runProgress(activeRun).total} tasks done.`
+            : latest
+                ? `Latest run ${latest.id} finished as ${latest.status || "unknown"}.`
+                : "Use Refresh All or a tab refresh button to start collecting confidence history.";
+        renderConfidencePanel("run-log-confidence", {
+            label: "Runs",
+            score: confidence,
+            headline: "",
+            detail,
+            action: total ? { label: "Review run history", scrollTo: "run-log-table" } : { label: "Refresh All", runAll: true },
+            metrics: [
+                { label: "Completed", value: formatNumber.format(completed), detail: `${formatNumber.format(total)} total`, tone: completed ? "ok" : "stale" },
+                { label: "Failed", value: formatNumber.format(failed), detail: "runs", tone: failed ? "bad" : "ok" },
+                { label: "Running", value: formatNumber.format(running), detail: "active", tone: running ? "watch" : "ok" },
+                { label: "Latest", value: latest?.status || "-", detail: latest?.selector || "none", tone: latest?.status === "failed" ? "bad" : latest?.status === "completed" ? "ok" : latest ? "watch" : "stale" },
+            ],
+        });
+    }
+
+    function runStatusTone(run) {
+        if (run.status === "completed") return "success";
+        if (run.status === "failed" || run.status === "interrupted") return "failure";
+        if (run.status === "running" || run.status === "queued") return "running";
+        return "neutral";
+    }
+
+    function renderRunTaskPills(run) {
+        const taskIds = run.task_ids || [];
+        if (!taskIds.length) return '<span class="muted">-</span>';
+        const completed = new Set(run.completed_task_ids || []);
+        const failed = new Set(run.failed_task_ids || []);
+        return taskIds.map((taskId) => {
+            const tone = failed.has(taskId)
+                ? "failure"
+                : completed.has(taskId) || run.status === "completed"
+                    ? "success"
+                    : run.status === "failed"
+                        ? "neutral"
+                        : runStatusTone(run);
+            return `<span class="pill run-history-pill run-history-pill--${tone}">${escapeHtml(taskId)}</span>`;
+        }).join("");
+    }
+
+    function renderRunArtifactPills(run) {
+        const artifacts = run.artifacts || [];
+        if (!artifacts.length) return '<span class="muted">-</span>';
+        return artifacts.map((artifact) => `<span class="pill run-history-pill run-history-pill--success" title="Generated artifact">${escapeHtml(artifact)}</span>`).join("");
     }
 
     function runProgress(run) {
@@ -5153,13 +5342,6 @@
             ${current}
             ${detail}
         </div>`;
-    }
-
-    function renderSelectedRunProgress() {
-        const target = byId("run-log-progress");
-        if (!target) return;
-        const run = state.runs.find((item) => item.id === state.selectedRun);
-        target.innerHTML = run ? renderRunProgress(run, "detail") : "";
     }
 
     function localityRisk(item) {
@@ -5495,8 +5677,14 @@
         const x = (value) => margin.left + (Math.log1p(Math.max(0, value)) / Math.log1p(maxChurn)) * plotWidth;
         const y = (value) => margin.top + (1 - ((clamp(value, minQuality, maxQuality) - minQuality) / Math.max(maxQuality - minQuality, 1))) * plotHeight;
         const plotPoints = points.map((item, index) => ({ ...item, pointIndex: index }));
-        const highRisk = [...plotPoints].sort((a, b) => (b.x * b.y) - (a.x * a.y)).slice(0, 8);
+        const highRisk = [...plotPoints].sort((a, b) => (b.x * b.y) - (a.x * a.y)).slice(0, 6);
         const highRiskKeys = new Set(highRisk.map((item) => item.name));
+        const churnTargetStats = [
+            ["High quality", points.filter((item) => item.y >= 600).length],
+            ["Watch quality", points.filter((item) => item.y >= 300 && item.y < 600).length],
+            ["Changed", points.filter((item) => item.x > 0).length],
+            ["Targets", highRisk.length],
+        ];
         const churnTicks = [0, Math.round(maxChurn / 4), Math.round(maxChurn / 2), maxChurn]
             .filter((value, index, values) => values.indexOf(value) === index);
         const qualityTicks = [Math.ceil(minQuality / 100) * 100, 300, 450, 600, Math.floor(maxQuality / 100) * 100]
@@ -5529,9 +5717,16 @@
             <div class="ll-popover churn-popover" hidden></div>
             <div class="ll-ranked-list churn-ranked-list">
                 <h3>Refactor targets</h3>
-                ${highRisk.map((item, index) => `<button type="button" class="ll-ranked-row" data-churn-point-index="${item.pointIndex}" title="${escapeHtml(item.name)}">
-                    <span>${index + 1}</span>
-                    <code>${escapeHtml(shortenLabel(item.moduleKey || item.name))}</code>
+                <div class="structural-tail-summary">
+                    ${churnTargetStats.map(([label, value]) => `<span><strong>${formatNumber.format(value)}</strong>${escapeHtml(label)}</span>`).join("")}
+                </div>
+                ${highRisk.map((item, index) => `<button type="button" class="ll-ranked-row type-health-ranked-row structural-tail-row" data-churn-point-index="${item.pointIndex}" title="${escapeHtml(item.name)}">
+                    <span class="structural-tail-rank">${index + 1}</span>
+                    <span class="structural-tail-row__body">
+                        <code>${escapeHtml(shortenLabel(item.moduleKey || item.name))}</code>
+                        <em>${formatNumber.format(item.x)} churn - ${formatNumber.format(item.y)} quality - ${formatNumber.format(item.sloc)} SLOC</em>
+                        <small>${escapeHtml(item.name)}</small>
+                    </span>
                     <strong>${formatNumber.format(item.y)}</strong>
                 </button>`).join("")}
             </div>
@@ -5685,12 +5880,7 @@
     function renderMap() {
         const payload = state.map;
         if (!payload?.graph) {
-            renderSummary("map-summary", [
-                metricCard("Nodes", "-"),
-                metricCard("Edges", "-"),
-                metricCard("High maintainability", "-"),
-                metricCard("Untested risk", "-"),
-            ]);
+            renderMapConfidence(null, [], []);
             byId("map-graph").innerHTML = '<p class="muted" style="padding: 20px;">No map data loaded.</p>';
             return;
         }
@@ -5712,21 +5902,10 @@
         }
 
         const moduleIds = new Set(modules.map((node) => node.id));
-        const summary = payload.meta?.summary || {};
-        const highMaintainability = modules.filter((node) => (node.maintainability_risk || 0) >= 350).length;
-        const lowTestEvidence = modules.filter((node) => !node.evidence?.has_tests).length;
         const visibleEdges = graph.edges
             .map((edge) => edge.data)
             .filter((edge) => moduleIds.has(edge.source) && moduleIds.has(edge.target));
-
-        renderSummary("map-summary", [
-            metricCard("Nodes", modules.length),
-            metricCard("Edges", visibleEdges.length),
-            metricCard("High maintainability", highMaintainability),
-            metricCard("Untested risk", lowTestEvidence),
-            metricCard("Cycle members", summary.cycle_members ?? "-"),
-            metricCard("Selected", state.selectedModule || "-"),
-        ]);
+        renderMapConfidence(payload, modules, visibleEdges);
 
         const layout = buildMapLayout(modules);
         const rowMarkup = renderFolderRows(layout);
@@ -5764,6 +5943,50 @@
         });
 
         renderMapDetail(modules, visibleEdges);
+    }
+
+    function renderMapConfidence(payload, modules, visibleEdges) {
+        if (!payload?.graph) {
+            renderConfidencePanel("map-confidence", {
+                label: "Map",
+                score: 0,
+                headline: "Architecture confidence needs map data",
+                detail: "Run the map refresh to load module risk, dependency edges, and evidence coverage.",
+                action: { label: "Refresh Map", runCategory: "map" },
+                metrics: [
+                    { label: "Modules", value: "-", detail: "not loaded", tone: "stale" },
+                    { label: "Edges", value: "-", detail: "not loaded", tone: "stale" },
+                    { label: "High risk", value: "-", detail: "not loaded", tone: "stale" },
+                    { label: "Tests", value: "-", detail: "not loaded", tone: "stale" },
+                ],
+            });
+            return;
+        }
+        const highMaintainability = modules.filter((node) => (node.maintainability_risk || 0) >= 350).length;
+        const lowTestEvidence = modules.filter((node) => !node.evidence?.has_tests).length;
+        const highRisk = modules.filter((node) => moduleScoreFor(node, state.mapMetric || "total_score") >= 600).length;
+        const cycleMembers = Number(payload.meta?.summary?.cycle_members || 0);
+        const confidence = clamp(Math.round(94 - highRisk * 5 - highMaintainability * 4 - lowTestEvidence * 2 - cycleMembers * 3), 10, 96);
+        const selected = state.selectedModule ? modules.find((node) => node.id === state.selectedModule) : null;
+        const detail = selected
+            ? `${selected.id} selected; total risk ${formatNumber.format(moduleScoreFor(selected, "total_score"))}.`
+            : `${formatNumber.format(modules.length)} modules, ${formatNumber.format(visibleEdges.length)} visible dependency edges.`;
+        renderConfidencePanel("map-confidence", {
+            label: "Map",
+            score: confidence,
+            headline: "",
+            detail,
+            action: { label: "Inspect risk map", scrollTo: "map-graph" },
+            metrics: [
+                { label: "Modules", value: formatNumber.format(modules.length), detail: "visible", tone: "ok" },
+                { label: "Edges", value: formatNumber.format(visibleEdges.length), detail: "visible", tone: visibleEdges.length ? "ok" : "watch" },
+                { label: "High risk", value: formatNumber.format(highRisk), detail: state.mapMetric, tone: highRisk ? "bad" : "ok" },
+                { label: "Maintainability", value: formatNumber.format(highMaintainability), detail: "high risk", tone: highMaintainability ? "bad" : "ok" },
+                { label: "Untested", value: formatNumber.format(lowTestEvidence), detail: "modules", tone: lowTestEvidence ? "watch" : "ok" },
+                { label: "Cycles", value: formatNumber.format(cycleMembers), detail: "members", tone: cycleMembers ? "watch" : "ok" },
+                { label: "Selected", value: state.selectedModule ? "1" : "-", detail: state.selectedModule || "none", tone: state.selectedModule ? "ok" : "stale" },
+            ],
+        });
     }
 
     function buildMapLayout(nodes) {
@@ -6259,20 +6482,43 @@
         }
     }
 
-    async function loadRunLog(runId, targetId = "run-log-output") {
+    async function loadRunLog(runId, targetId = null) {
         if (!runId) return;
+        if (!targetId && state.selectedRun === runId) {
+            state.selectedRun = null;
+            state.selectedRunLogText = "";
+            renderRunLog();
+            return;
+        }
         state.selectedRun = runId;
-        renderSelectedRunProgress();
-        const output = byId(targetId);
-        if (!output) return;
+        if (!targetId) {
+            state.selectedRunLogText = "Loading run log...";
+            renderRunLog();
+        }
+        const output = targetId ? byId(targetId) : null;
+        if (targetId && !output) return;
         if (targetId === "overview-run-log") output.hidden = false;
-        output.textContent = "Loading run log...";
+        if (output) output.textContent = "Loading run log...";
         try {
             const response = await fetch(`/api/run/${encodeURIComponent(runId)}/log`, { cache: "no-store" });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            output.textContent = await response.text();
+            const text = await response.text();
+            if (output) {
+                output.textContent = text;
+            } else {
+                if (state.selectedRun !== runId) return;
+                state.selectedRunLogText = text;
+                renderRunLog();
+            }
         } catch (error) {
-            output.textContent = `No log available from the dashboard server.\n${error.message}`;
+            const message = `No log available from the dashboard server.\n${error.message}`;
+            if (output) {
+                output.textContent = message;
+            } else {
+                if (state.selectedRun !== runId) return;
+                state.selectedRunLogText = message;
+                renderRunLog();
+            }
         }
     }
 
@@ -6476,6 +6722,7 @@
         document.querySelectorAll(".tab-panel").forEach((item) => item.classList.remove("is-active"));
         button.classList.add("is-active");
         panel.classList.add("is-active");
+        document.body.dataset.activeTab = tabId;
         if (tabId === "app-package") {
             renderAppPackage();
         }
@@ -6563,16 +6810,11 @@
 
     function renderAppPackage() {
         const payload = state.appPackage;
-        const summaryTarget = byId("app-package-summary");
-        if (!summaryTarget) return;
+        const rootTarget = byId("app-package-root");
+        if (!rootTarget) return;
         if (!payload) {
-            renderSummary("app-package-summary", [
-                metricCard("Status", "Unavailable"),
-                metricCard("Tabs", "-"),
-                metricCard("Buffers", "-"),
-                metricCard("Diagnostics", "-"),
-            ]);
-            byId("app-package-root").innerHTML = `<p class="muted">No app package payload loaded.</p>`;
+            renderAppPackageConfidence(null);
+            rootTarget.innerHTML = `<p class="muted">No app package payload loaded.</p>`;
             renderAppPackageInsights(null);
             updateAppPackageCount("app-package-diagnostics-count", 0, 0, "events");
             updateAppPackageCount("app-package-buffers-count", 0, 0, "buffers");
@@ -6588,15 +6830,9 @@
             return;
         }
 
-        const summary = payload.manifest_summary || {};
-        renderSummary("app-package-summary", [
-            metricCard("Status", payload.exists ? "Found" : "Missing"),
-            metricCard("Tabs", summary.tab_count ?? 0),
-            metricCard("Buffers", summary.buffer_count ?? 0),
-            metricCard("Diagnostics", summary.diagnostic_count ?? 0),
-        ]);
+        renderAppPackageConfidence(payload);
 
-        byId("app-package-root").innerHTML = `
+        rootTarget.innerHTML = `
             <div class="package-paths__row"><span>Session root</span><code>${escapeHtml(payload.session_root || "-")}</code></div>
             <div class="package-paths__row"><span>Manifest</span><code>${escapeHtml(payload.manifest_path || "-")}</code></div>
             <div class="package-paths__row"><span>Manifest file</span>${appPackageFileMeta(payload.manifest_file)}</div>
@@ -6615,6 +6851,58 @@
         byId("app-package-warnings").innerHTML = warnings.length
             ? `<ul class="warning-list">${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
             : `<p class="muted">No loader warnings.</p>`;
+    }
+
+    function renderAppPackageConfidence(payload) {
+        if (!payload) {
+            renderConfidencePanel("app-package-confidence", {
+                label: "Telemetry",
+                score: 0,
+                headline: "Telemetry package is unavailable",
+                detail: "Start the dashboard API or use the Refresh Package button to load live app state.",
+                action: { label: "Refresh Package", clickId: "app-package-refresh" },
+                metrics: [
+                    { label: "Tabs", value: "-", detail: "not loaded", tone: "stale" },
+                    { label: "Buffers", value: "-", detail: "not loaded", tone: "stale" },
+                    { label: "Diagnostics", value: "-", detail: "not loaded", tone: "stale" },
+                    { label: "Warnings", value: "-", detail: "not loaded", tone: "stale" },
+                ],
+            });
+            return;
+        }
+        const summary = payload.manifest_summary || {};
+        const diagnostics = payload.diagnostics || [];
+        const warnings = payload.warnings || [];
+        const buffers = payload.buffers || [];
+        const dirtyBuffers = buffers.filter((buffer) => buffer.is_dirty).length;
+        const missingSnapshots = buffers.filter((buffer) => !buffer.snapshot?.exists).length;
+        const confidence = payload.exists
+            ? clamp(Math.round(94 - warnings.length * 9 - missingSnapshots * 3 - dirtyBuffers * 2), 10, 96)
+            : 18;
+        const headline = !payload.exists
+            ? "Telemetry package is missing"
+            : warnings.length
+                ? "Telemetry loaded with warnings"
+                : dirtyBuffers || missingSnapshots
+                    ? "Telemetry is useful with live-state caveats"
+                    : "Telemetry package is ready";
+        const detail = warnings[0]
+            ? warnings[0]
+            : `${formatNumber.format(summary.tab_count ?? 0)} tabs, ${formatNumber.format(summary.buffer_count ?? 0)} buffers, ${formatNumber.format(diagnostics.length)} diagnostics.`;
+        renderConfidencePanel("app-package-confidence", {
+            label: "Telemetry",
+            score: confidence,
+            headline,
+            detail,
+            action: { label: "Open package datasets", scrollTo: "app-package-diagnostics-panel" },
+            metrics: [
+                { label: "Status", value: payload.exists ? "Found" : "Missing", detail: "package", tone: payload.exists ? "ok" : "bad" },
+                { label: "Tabs", value: formatNumber.format(summary.tab_count ?? 0), detail: "session", tone: summary.tab_count ? "ok" : "watch" },
+                { label: "Buffers", value: formatNumber.format(summary.buffer_count ?? buffers.length), detail: `${formatNumber.format(dirtyBuffers)} dirty`, tone: dirtyBuffers ? "watch" : "ok" },
+                { label: "Diagnostics", value: formatNumber.format(summary.diagnostic_count ?? diagnostics.length), detail: "events", tone: diagnostics.length ? "watch" : "ok" },
+                { label: "Warnings", value: formatNumber.format(warnings.length), detail: "loader", tone: warnings.length ? "bad" : "ok" },
+            ],
+        });
     }
 
     function renderAppPackageInsights(payload) {
@@ -7042,8 +7330,14 @@
         const yValue = (item) => useRiskY ? typeHealthRisk(item) : Number(item.method_count || 0);
         const widthCut = x(16);
         const methodCut = y(useRiskY ? 40 : 20);
-        const highRisk = [...rows].sort((a, b) => typeHealthRisk(b) - typeHealthRisk(a)).slice(0, 8);
+        const highRisk = [...rows].sort((a, b) => typeHealthRisk(b) - typeHealthRisk(a)).slice(0, 6);
         const highRiskKeys = new Set(highRisk.map((item) => item.qualified_name || item.type_name));
+        const structuralTailStats = [
+            ["High risk", rows.filter((item) => typeHealthRisk(item) >= 40).length],
+            ["Broad methods", rows.filter((item) => Number(item.method_count || 0) >= 20).length],
+            ["Wide types", rows.filter((item) => typeWidth(item) >= 16).length],
+            ["Spread impls", rows.filter((item) => Number(item.impl_file_count || 0) >= 2).length],
+        ];
         const points = rows.map((item, index) => {
             const risk = typeHealthRisk(item);
             const cls = risk >= 40 ? "bad" : risk >= 25 ? "warn" : "good";
@@ -7073,11 +7367,18 @@
                 ${points}
             </svg>
             <div class="ll-popover type-health-popover" hidden></div>
-            <div class="ll-ranked-list">
+            <div class="ll-ranked-list structural-tail-list">
                 <h3>Structural tail</h3>
-                ${highRisk.map((item, index) => `<button type="button" class="ll-ranked-row type-health-ranked-row" data-type-health-index="${rows.indexOf(item)}" title="${escapeHtml(item.qualified_name || item.type_name)}">
-                    <span>${index + 1}</span>
-                    <code>${escapeHtml(shortenLabel(item.qualified_name || item.type_name))}</code>
+                <div class="structural-tail-summary">
+                    ${structuralTailStats.map(([label, value]) => `<span><strong>${formatNumber.format(value)}</strong>${escapeHtml(label)}</span>`).join("")}
+                </div>
+                ${highRisk.map((item, index) => `<button type="button" class="ll-ranked-row type-health-ranked-row structural-tail-row" data-type-health-index="${rows.indexOf(item)}" title="${escapeHtml(item.qualified_name || item.type_name)}">
+                    <span class="structural-tail-rank">${index + 1}</span>
+                    <span class="structural-tail-row__body">
+                        <code>${escapeHtml(shortenLabel(item.qualified_name || item.type_name))}</code>
+                        <em>${formatNumber.format(typeWidth(item))} width - ${formatNumber.format(item.method_count || 0)} methods - ${formatNumber.format(item.impl_file_count || 0)} files</em>
+                        <small>${escapeHtml(pillValues(item.signals).slice(0, 2).join(" - ") || item.path || "")}</small>
+                    </span>
                     <strong>${formatNumber.format(typeHealthRisk(item))}</strong>
                 </button>`).join("")}
             </div>
@@ -7696,6 +7997,38 @@
         });
     }
 
+    function onElements(selector, eventName, handler) {
+        document.querySelectorAll(selector).forEach((element) => {
+            element.addEventListener(eventName, () => handler(element));
+        });
+    }
+
+    function setPressedGroup(selector, activeElement) {
+        document.querySelectorAll(selector).forEach((element) => {
+            const active = element === activeElement;
+            element.classList.toggle("is-active", active);
+            element.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+    }
+
+    function bindModeGroup(selector, datasetKey, fallbackValue, setValue, render) {
+        onElements(selector, "click", (button) => {
+            setValue(button.dataset[datasetKey] || fallbackValue);
+            setPressedGroup(selector, button);
+            render();
+        });
+    }
+
+    function bindRunButtons() {
+        onElements("[data-run]", "click", (button) => triggerRun("/api/run/all", button));
+        onElements("[data-run-category]", "click", (button) => {
+            triggerRun(`/api/run/category/${encodeURIComponent(button.dataset.runCategory)}`, button);
+        });
+        onElements("[data-run-item]", "click", (button) => {
+            triggerRun(`/api/run/item/${encodeURIComponent(button.dataset.runItem)}`, button);
+        });
+    }
+
     byId("viewer-version").textContent = viewerVersion;
     setupTabs();
     byId("hotspots-filter")?.addEventListener("input", () => { renderHotspots(); updateQualityHash(); });
@@ -7706,65 +8039,31 @@
     byId("locality-filter")?.addEventListener("input", () => { renderLocalityLeverage(); updateQualityHash(); });
     byId("leverage-filter")?.addEventListener("input", () => { renderLocalityLeverage(); updateQualityHash(); });
     byId("correctness-show-all")?.addEventListener("change", renderCorrectness);
-    document.querySelectorAll("[data-quality-distribution-mode]").forEach((button) => {
-        button.addEventListener("click", () => {
-            state.qualityDistributionMode = button.dataset.qualityDistributionMode || "counts";
-            document.querySelectorAll("[data-quality-distribution-mode]").forEach((item) => {
-                const active = item === button;
-                item.classList.toggle("is-active", active);
-                item.setAttribute("aria-pressed", active ? "true" : "false");
-            });
-            renderQualityDistribution();
-        });
+    bindModeGroup("[data-quality-distribution-mode]", "qualityDistributionMode", "counts", (value) => {
+        state.qualityDistributionMode = value;
+    }, renderQualityDistribution);
+    bindModeGroup("[data-clone-distribution-mode]", "cloneDistributionMode", "counts", (value) => {
+        state.cloneDistributionMode = value;
+    }, renderCloneDistribution);
+    onElements("[data-quality-dataset-view]", "click", (button) => {
+        state.qualityDatasetView = button.dataset.qualityDatasetView || "hotspots";
+        renderQualityDatasetView();
     });
-    document.querySelectorAll("[data-clone-distribution-mode]").forEach((button) => {
-        button.addEventListener("click", () => {
-            state.cloneDistributionMode = button.dataset.cloneDistributionMode || "counts";
-            document.querySelectorAll("[data-clone-distribution-mode]").forEach((item) => {
-                const active = item === button;
-                item.classList.toggle("is-active", active);
-                item.setAttribute("aria-pressed", active ? "true" : "false");
-            });
-            renderCloneDistribution();
-        });
+    onElements("[data-clear-quality-filter]", "click", (button) => {
+        clearQualityDatasetFilter(button.dataset.clearQualityFilter || state.qualityDatasetView);
     });
-    document.querySelectorAll("[data-quality-dataset-view]").forEach((button) => {
-        button.addEventListener("click", () => {
-            state.qualityDatasetView = button.dataset.qualityDatasetView || "hotspots";
-            renderQualityDatasetView();
-        });
+    onElements("[data-quality-panel-mode]", "click", (button) => {
+        const key = button.dataset.qualityPanelMode;
+        if (!key) return;
+        state[key] = button.dataset.qualityPanelValue || "counts";
+        setPressedGroup(`[data-quality-panel-mode="${CSS.escape(key)}"]`, button);
+        renderTypeHealthDistribution();
+        renderEscapeHatchDistribution();
+        renderLocalityLeverage();
     });
-    document.querySelectorAll("[data-clear-quality-filter]").forEach((button) => {
-        button.addEventListener("click", () => {
-            clearQualityDatasetFilter(button.dataset.clearQualityFilter || state.qualityDatasetView);
-        });
-    });
-    document.querySelectorAll("[data-quality-panel-mode]").forEach((button) => {
-        button.addEventListener("click", () => {
-            const key = button.dataset.qualityPanelMode;
-            if (!key) return;
-            state[key] = button.dataset.qualityPanelValue || "counts";
-            document.querySelectorAll(`[data-quality-panel-mode="${CSS.escape(key)}"]`).forEach((item) => {
-                const active = item === button;
-                item.classList.toggle("is-active", active);
-                item.setAttribute("aria-pressed", active ? "true" : "false");
-            });
-            renderTypeHealthDistribution();
-            renderEscapeHatchDistribution();
-            renderLocalityLeverage();
-        });
-    });
-    document.querySelectorAll("[data-type-health-y]").forEach((button) => {
-        button.addEventListener("click", () => {
-            state.typeHealthScatterY = button.dataset.typeHealthY || "methods";
-            document.querySelectorAll("[data-type-health-y]").forEach((item) => {
-                const active = item === button;
-                item.classList.toggle("is-active", active);
-                item.setAttribute("aria-pressed", active ? "true" : "false");
-            });
-            renderTypeHealthScatter();
-        });
-    });
+    bindModeGroup("[data-type-health-y]", "typeHealthY", "methods", (value) => {
+        state.typeHealthScatterY = value;
+    }, renderTypeHealthScatter);
     renderQualityDatasetView();
     byId("performance-dataset-search")?.addEventListener("input", (event) => {
         state.performanceDatasetSearch = event.target.value || "";
@@ -7818,11 +8117,9 @@
     renderPerformanceDatasetView();
     byId("app-package-refresh")?.addEventListener("click", refreshAppPackage);
     byId("app-package-clear-buffers")?.addEventListener("click", clearAppPackageBuffers);
-    document.querySelectorAll("[data-app-package-view]").forEach((button) => {
-        button.addEventListener("click", () => {
-            state.appPackageView = button.dataset.appPackageView || "diagnostics";
-            renderAppPackageDataView();
-        });
+    onElements("[data-app-package-view]", "click", (button) => {
+        state.appPackageView = button.dataset.appPackageView || "diagnostics";
+        renderAppPackageDataView();
     });
     byId("app-package-buffer-filter")?.addEventListener("input", renderAppPackage);
     byId("app-package-diagnostics-filter")?.addEventListener("input", renderAppPackage);
@@ -7844,30 +8141,14 @@
         byId("map-zoom-value").textContent = `${Math.round(state.mapZoom * 100)}%`;
         renderMap();
     });
-    document.querySelectorAll("[data-overview-risk-mode]").forEach((button) => {
-        button.addEventListener("click", () => {
-            state.overviewRiskMode = button.dataset.overviewRiskMode;
-            document.querySelectorAll("[data-overview-risk-mode]").forEach((item) => {
-                const active = item === button;
-                item.classList.toggle("is-active", active);
-                item.setAttribute("aria-pressed", active ? "true" : "false");
-            });
-            renderRiskTreemap();
-        });
-    });
+    bindModeGroup("[data-overview-risk-mode]", "overviewRiskMode", "top", (value) => {
+        state.overviewRiskMode = value;
+    }, renderRiskTreemap);
     byId("overview-risk-filter")?.addEventListener("change", (event) => {
         state.overviewRiskFilter = event.target.value;
         renderRiskTreemap();
     });
-    document.querySelectorAll("[data-run]").forEach((button) => {
-        button.addEventListener("click", () => triggerRun("/api/run/all", button));
-    });
-    document.querySelectorAll("[data-run-category]").forEach((button) => {
-        button.addEventListener("click", () => triggerRun(`/api/run/category/${encodeURIComponent(button.dataset.runCategory)}`, button));
-    });
-    document.querySelectorAll("[data-run-item]").forEach((button) => {
-        button.addEventListener("click", () => triggerRun(`/api/run/item/${encodeURIComponent(button.dataset.runItem)}`, button));
-    });
+    bindRunButtons();
     window.setInterval(refreshRuns, 5000);
     applyQualityHashState();
     loadDefaults().then(() => {

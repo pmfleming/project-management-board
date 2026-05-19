@@ -15,53 +15,56 @@
 </head>
 
 <body>
-    <main class="app-shell">
-        <header class="hero">
-            <div>
-                <p class="eyebrow">Scratchpad measurement dashboard</p>
-                <h1>Quality, performance, correctness, and module health</h1>
-                <p class="lede">
-                    Dashboard-first review for the JSON artifacts produced by the measurement tools.
-                </p>
-            </div>
-            <div class="data-card">
-                <div class="data-card__label">Primary inputs</div>
-                <code>target/analysis/measurement_catalog.json</code>
-                <code>target/analysis/measurement_runs.json</code>
-                <code>target/analysis/hotspots.json</code>
-                <code>target/analysis/type_health.json</code>
-                <code>target/analysis/clones.json</code>
-                <code>target/analysis/speed_efficiency_report.json</code>
-                <code>target/analysis/correctness_review.json</code>
-                <code>target/analysis/map.json</code>
-                <code>target/analysis/project_code_metrics.json</code>
-            </div>
-        </header>
+    <main class="app-shell workbench-shell">
+        <aside class="workbench-rail" aria-label="Dashboard navigation and context">
+            <a class="workbench-brand" href="/viewer/">
+                <span>PM</span>
+                <strong>Project Board</strong>
+            </a>
 
-        <section class="loader-panel" aria-label="Data loading controls">
-            <div>
-                <strong id="load-status">Loading default JSON artifacts...</strong>
-                <p id="load-detail">
-                    Artifacts are read from <code>target/analysis/</code>. Use Refresh to regenerate.
-                </p>
-                <p class="viewer-version">
-                    Viewer version: <code id="viewer-version">loading</code>
-                </p>
-            </div>
-        </section>
+            <nav class="tabs" aria-label="Metric views">
+                <button class="tab is-active tab--overview" data-tab="overview">
+                    <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z" /></svg></span>Overview</button>
+                <button class="tab tab--telemetry" data-tab="app-package">
+                    <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-7 4 14 2-7h6" /></svg></span>Telemetry</button>
+                <button class="tab tab--quality" data-tab="quality-review">
+                    <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z" /><path d="m8.5 12 2.2 2.2 4.8-5" /></svg></span>Quality</button>
+                <button class="tab tab--performance" data-tab="performance-review">
+                    <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 14a8 8 0 1 1 16 0" /><path d="M12 14 16 9" /><path d="M7 14h10" /></svg></span>Performance</button>
+                <button class="tab tab--correctness" data-tab="correctness-review">
+                    <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 11v1a9 9 0 1 1-5.3-8.2" /><path d="m9 11 3 3L22 4" /></svg></span>Correctness</button>
+                <button class="tab tab--map" data-tab="map">
+                    <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3" /><circle cx="18" cy="7" r="3" /><circle cx="12" cy="17" r="3" /><path d="M8.7 8.7 10.5 14M15.3 8.7 13.5 14" /></svg></span>Map</button>
+                <button class="tab tab--log" data-tab="run-log">
+                    <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z" /><path d="m8 9 3 3-3 3" /><path d="M13 15h4" /></svg></span>Log</button>
+            </nav>
 
-        <nav class="tabs" aria-label="Metric views">
-            <button class="tab is-active" data-tab="overview">Overview</button>
-            <button class="tab" data-tab="app-package">Telemetry</button>
-            <button class="tab" data-tab="quality-review">Quality</button>
-            <button class="tab" data-tab="performance-review">Performance</button>
-            <button class="tab" data-tab="correctness-review">Correctness</button>
-            <button class="tab" data-tab="map">Map</button>
-            <button class="tab" data-tab="run-log">Log</button>
-        </nav>
+            <section class="loader-panel" aria-label="Data loading controls">
+                <div>
+                    <strong id="load-status">Loading default JSON artifacts...</strong>
+                    <p id="load-detail">
+                        Artifacts are read from <code>target/analysis/</code>. Use Refresh to regenerate.
+                    </p>
+                    <p class="viewer-version">
+                        Viewer version: <code id="viewer-version">loading</code>
+                    </p>
+                </div>
+            </section>
+        </aside>
+
+        <div class="workbench-main">
+            <div class="workbench-content">
 
         <section id="overview" class="tab-panel is-active">
-            <div id="overview-health" class="health-grid"></div>
+            <div class="category-header">
+                <div class="page-title-lockup">
+                    <div class="page-icon page-icon--overview" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z" /></svg>
+                    </div>
+                    <h1>Overview</h1>
+                </div>
+            </div>
+            <div id="overview-confidence" class="confidence-panel"></div>
             <div class="overview-code-layout">
                 <div class="panel-card">
                     <div class="panel-card__header">
@@ -83,7 +86,7 @@
                     <div id="overview-code-history" class="code-history"></div>
                 </div>
             </div>
-            <div class="panel-card">
+            <div class="panel-card overview-risk-surface">
                 <div class="panel-card__header">
                     <div>
                         <h2>Module risk map</h2>
@@ -114,7 +117,7 @@
                 <div id="overview-treemap" class="risk-treemap"></div>
             </div>
             <div id="overview-top-concerns" class="top-concerns-grid"></div>
-            <div class="panel-card">
+            <div class="panel-card overview-run-surface">
                 <div class="panel-card__header">
                     <div>
                         <h2>Recent runs</h2>
@@ -128,12 +131,15 @@
 
         <section id="quality-review" class="tab-panel">
             <div class="category-header">
-                <div>
-                    <h2>Quality Review</h2>
-                    <p>Hotspots focus on complexity and maintainability. SLOC is shown separately as size context.</p>
+                <div class="page-title-lockup">
+                    <div class="page-icon page-icon--quality" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M12 3 20 6v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z" /><path d="m8.5 12 2.2 2.2 4.8-5" /></svg>
+                    </div>
+                    <h1>Quality</h1>
                 </div>
                 <button class="run-button" data-run-category="quality">Refresh Quality</button>
             </div>
+            <div id="quality-confidence" class="confidence-panel"></div>
             <div id="quality-overview" class="quality-overview"></div>
 
             <div class="quality-layout">
@@ -395,9 +401,11 @@
 
         <section id="performance-review" class="tab-panel">
             <div class="category-header">
-                <div>
-                    <h2>Performance Review</h2>
-                    <p>Scenario-first view across speed tests, capacity reports, resource profiles, and flamegraphs.</p>
+                <div class="page-title-lockup">
+                    <div class="page-icon page-icon--performance" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M4 14a8 8 0 1 1 16 0" /><path d="M12 14 16 9" /><path d="M7 14h10" /></svg>
+                    </div>
+                    <h1>Performance</h1>
                 </div>
                 <div class="performance-actions" aria-label="Performance quick links">
                     <button type="button" class="run-button" data-run-category="performance">Refresh
@@ -405,8 +413,8 @@
                 </div>
             </div>
 
+            <div id="performance-confidence" class="confidence-panel"></div>
             <div id="performance-stale-state" class="performance-stale-state"></div>
-            <div id="performance-verdict" class="performance-verdict"></div>
 
             <div class="performance-section-heading">
                 <div>
@@ -460,13 +468,15 @@
 
         <section id="correctness-review" class="tab-panel">
             <div class="category-header correctness-header">
-                <div>
-                    <h2>Correctness Review</h2>
-                    <p>Inline test coverage categorized by behavior and architectural layer.</p>
+                <div class="page-title-lockup">
+                    <div class="page-icon page-icon--correctness" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M21 11v1a9 9 0 1 1-5.3-8.2" /><path d="m9 11 3 3L22 4" /></svg>
+                    </div>
+                    <h1>Correctness</h1>
                 </div>
                 <button class="run-button" data-run-category="correctness">Refresh Correctness</button>
             </div>
-            <div id="correctness-summary" class="summary-grid"></div>
+            <div id="correctness-confidence" class="confidence-panel"></div>
             <div id="correctness-overview" class="correctness-overview"></div>
             <div class="panel-card correctness-layer-panel">
                 <div class="panel-card__header">
@@ -478,18 +488,15 @@
                 </div>
                 <div id="correctness-matrix" class="layer-matrix"></div>
             </div>
-            <details class="disclose">
-                <summary>Show full layer table</summary>
-                <div class="panel-card">
-                    <div class="panel-card__header">
-                        <div>
-                            <h2>Architectural Layers</h2>
-                            <p>Test ownership and current result state.</p>
-                        </div>
+            <div class="panel-card correctness-layers-panel">
+                <div class="panel-card__header">
+                    <div>
+                        <h2>Architectural Layers</h2>
+                        <p>Test ownership and current result state.</p>
                     </div>
-                    <div id="correctness-layers" class="table-wrap"></div>
                 </div>
-            </details>
+                <div id="correctness-layers" class="table-wrap"></div>
+            </div>
             <div class="panel-card correctness-tests-panel">
                 <div class="panel-card__header">
                     <div>
@@ -511,13 +518,15 @@
 
         <section id="map" class="tab-panel">
             <div class="category-header">
-                <div>
-                    <h2>Map</h2>
-                    <p>Dependency layout with quality, performance, and correctness health per module.</p>
+                <div class="page-title-lockup">
+                    <div class="page-icon page-icon--map" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3" /><circle cx="18" cy="7" r="3" /><circle cx="12" cy="17" r="3" /><path d="M8.7 8.7 10.5 14M15.3 8.7 13.5 14" /></svg>
+                    </div>
+                    <h1>Map</h1>
                 </div>
                 <button class="run-button" data-run-category="map">Refresh Map</button>
             </div>
-            <div id="map-summary" class="summary-grid"></div>
+            <div id="map-confidence" class="confidence-panel"></div>
             <div class="map-layout">
                 <div class="panel-card graph-card">
                     <div class="panel-card__header">
@@ -570,16 +579,17 @@
 
         <section id="app-package" class="tab-panel">
             <div class="category-header">
-                <div>
-                    <h2>Telemetry</h2>
-                    <p>Runtime session manifest, buffer snapshots, and structured diagnostics from the active app
-                        session root.</p>
+                <div class="page-title-lockup">
+                    <div class="page-icon page-icon--telemetry" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M3 12h4l2-7 4 14 2-7h6" /></svg>
+                    </div>
+                    <h1>Telemetry</h1>
                 </div>
                 <div class="app-package-actions" aria-label="App package actions">
                     <button type="button" class="run-button" id="app-package-refresh">Refresh Package</button>
                 </div>
             </div>
-            <div id="app-package-summary" class="summary-grid"></div>
+            <div id="app-package-confidence" class="confidence-panel"></div>
             <div id="app-package-insights" class="app-package-insights"></div>
             <div class="app-package-dashboard">
                 <div class="app-package-main">
@@ -673,25 +683,25 @@
                             <pre id="app-package-manifest" class="log-output app-package-json"></pre>
                         </div>
                     </div>
-                </div>
-                <div class="app-package-sidebar">
-                    <div class="panel-card" id="app-package-root-panel">
-                        <div class="panel-card__header">
-                            <div>
-                                <h2>Session root</h2>
-                                <p>The server resolves this path from the same OS temp convention as the app.</p>
+                    <div class="app-package-support-row">
+                        <div class="panel-card" id="app-package-root-panel">
+                            <div class="panel-card__header">
+                                <div>
+                                    <h2>Session root</h2>
+                                    <p>The server resolves this path from the same OS temp convention as the app.</p>
+                                </div>
                             </div>
+                            <div id="app-package-root" class="package-paths"></div>
                         </div>
-                        <div id="app-package-root" class="package-paths"></div>
-                    </div>
-                    <div class="panel-card">
-                        <div class="panel-card__header">
-                            <div>
-                                <h2>Warnings</h2>
-                                <p>Non-fatal loader issues while reading live app state.</p>
+                        <div class="panel-card">
+                            <div class="panel-card__header">
+                                <div>
+                                    <h2>Warnings</h2>
+                                    <p>Non-fatal loader issues while reading live app state.</p>
+                                </div>
                             </div>
+                            <div id="app-package-warnings"></div>
                         </div>
-                        <div id="app-package-warnings"></div>
                     </div>
                 </div>
             </div>
@@ -699,27 +709,22 @@
 
         <section id="run-log" class="tab-panel">
             <div class="category-header">
-                <div>
-                    <h2>Run Log</h2>
-                    <p>Dashboard refreshes, task status, artifacts, and command logs.</p>
+                <div class="page-title-lockup">
+                    <div class="page-icon page-icon--log" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z" /><path d="m8 9 3 3-3 3" /><path d="M13 15h4" /></svg>
+                    </div>
+                    <h1>Log</h1>
                 </div>
                 <button class="run-button" data-run="all">Refresh All</button>
             </div>
+            <div id="run-log-confidence" class="confidence-panel"></div>
             <div id="run-log-summary" class="summary-grid"></div>
-            <div class="panel-card">
-                <div id="run-log-table" class="table-wrap"></div>
-            </div>
-            <div class="panel-card">
-                <div class="panel-card__header">
-                    <div>
-                        <h2>Selected Log</h2>
-                        <p>Click a run row to load its command output.</p>
-                    </div>
-                </div>
-                <div id="run-log-progress" class="run-progress-detail"></div>
-                <pre id="run-log-output" class="log-output">No run selected.</pre>
+            <div class="panel-card run-log-table-panel">
+                <div id="run-log-table" class="run-history-list"></div>
             </div>
         </section>
+            </div>
+        </div>
     </main>
 
     <script>
