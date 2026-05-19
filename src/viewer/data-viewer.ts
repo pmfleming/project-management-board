@@ -20,7 +20,7 @@
         projectCodeMetrics: `../target/analysis/project_code_metrics.json?v=${viewerVersion}`,
         flamegraphs: `../target/analysis/flamegraphs.json?v=${viewerVersion}`,
         correctness: `../target/analysis/correctness_review.json?v=${viewerVersion}`,
-        appPackage: `/api/app-package?v=${viewerVersion}`,
+        appPackage: `../target/analysis/app_package.json?v=${viewerVersion}`,
     };
 
     const state = {
@@ -4335,7 +4335,7 @@
             ? `Highest hotspot is ${(worstHotspot.name || "").split(/[\\/]/).pop()} at ${formatNumber.format(qualityScore(worstHotspot))}.`
             : dataLoaded
                 ? `${formatNumber.format(cloneRisks)} risky clone groups, ${formatNumber.format(structuralRisks)} structural watch items.`
-                : "Run the quality refresh to populate hotspots, clones, structural, locality, and leverage data.";
+                : "Quality data is not loaded yet.";
 
         return {
             confidence,
@@ -4647,7 +4647,7 @@
         if (!target) return;
         const graph = state.map?.graph;
         if (!graph || !graph.nodes) {
-            target.innerHTML = `<div class="risk-treemap__empty">No map data. Run the Map refresh.</div>`;
+            target.innerHTML = `<div class="risk-treemap__empty">No map data loaded.</div>`;
             return;
         }
         const modules = graph.nodes
@@ -4714,7 +4714,7 @@
         const target = byId("overview-code-pie");
         if (!target) return;
         if (!state.projectCodeMetrics) {
-            target.innerHTML = `<p class="muted">No project code metrics loaded. Refresh Project Code Metrics.</p>`;
+            target.innerHTML = `<p class="muted">No project code metrics loaded.</p>`;
             return;
         }
         const parts = codeMetricParts();
@@ -4932,7 +4932,7 @@
         if (!target) return;
         const runs = [...state.runs].slice(-12).reverse();
         if (!runs.length) {
-            target.innerHTML = `<p class="muted">No runs yet. Use the Refresh buttons above to start one.</p>`;
+            target.innerHTML = `<p class="muted">No runs recorded.</p>`;
             return;
         }
         target.innerHTML = runs.map((run) => {
@@ -5247,7 +5247,7 @@
             ? `${activeRun.id} is ${activeRun.status}; ${runProgress(activeRun).done} of ${runProgress(activeRun).total} tasks done.`
             : latest
                 ? `Latest run ${latest.id} finished as ${latest.status || "unknown"}.`
-                : "Use Refresh All or a tab refresh button to start collecting confidence history.";
+                : "No run history has been collected yet.";
         renderConfidencePanel("run-log-confidence", {
             label: "Runs",
             score: confidence,
@@ -5951,7 +5951,7 @@
                 label: "Map",
                 score: 0,
                 headline: "Architecture confidence needs map data",
-                detail: "Run the map refresh to load module risk, dependency edges, and evidence coverage.",
+                detail: "Map data is not loaded yet.",
                 action: { label: "Refresh Map", runCategory: "map" },
                 metrics: [
                     { label: "Modules", value: "-", detail: "not loaded", tone: "stale" },
@@ -6698,10 +6698,10 @@
             detail.textContent = "Data came from target/analysis.";
         } else if (loaded.length > 0) {
             status.textContent = `Loaded ${loaded.length} default artifact sets.`;
-            detail.textContent = `Some default files were missing: ${missing.join("; ")}. Use Refresh to regenerate them.`;
+            detail.textContent = `Some default files were missing: ${missing.join("; ")}.`;
         } else {
             status.textContent = "No artifacts loaded.";
-            detail.textContent = `Default fetch failed: ${missing.join("; ")}. Start with scripts/open-overview.ps1 and use Refresh to regenerate artifacts.`;
+            detail.textContent = `Default fetch failed: ${missing.join("; ")}. Start with scripts/open-overview.ps1 to regenerate artifacts.`;
         }
         renderAll();
     }
@@ -6710,6 +6710,16 @@
         document.querySelectorAll(".tab").forEach((button) => {
             button.addEventListener("click", () => {
                 activateTab(button.dataset.tab);
+            });
+        });
+        document.querySelectorAll("[data-tab-target]").forEach((link) => {
+            link.addEventListener("click", (event) => {
+                const target = event.currentTarget as HTMLElement;
+                const tabId = target.dataset.tabTarget;
+                if (!tabId) return;
+                event.preventDefault();
+                activateTab(tabId);
+                window.location.hash = tabId;
             });
         });
     }
@@ -6732,7 +6742,7 @@
         const params = new URLSearchParams(window.location.search);
         const hash = window.location.hash.replace(/^#/, "");
         const requested = params.get("tab") || hash.split("?")[0];
-        return requested || "overview";
+        return requested || "purpose";
     }
 
     function applyQualityHashState() {
@@ -6859,7 +6869,7 @@
                 label: "Telemetry",
                 score: 0,
                 headline: "Telemetry package is unavailable",
-                detail: "Start the dashboard API or use the Refresh Package button to load live app state.",
+                detail: "Start the dashboard API to load live app state.",
                 action: { label: "Refresh Package", clickId: "app-package-refresh" },
                 metrics: [
                     { label: "Tabs", value: "-", detail: "not loaded", tone: "stale" },

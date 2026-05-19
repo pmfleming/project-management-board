@@ -1,6 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig, transformWithEsbuild, type Plugin } from "vite";
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import type { PluginContext } from "rollup";
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
@@ -65,6 +66,26 @@ const runsPath = join(analysisRoot, "measurement_runs.json");
 const logDir = join(analysisRoot, "logs");
 const viewerControllerPath = join(repoRoot, "src", "viewer", "data-viewer.ts");
 const commandTimeoutMs = Number(process.env.PMB_COMMAND_TIMEOUT_MS ?? 30 * 60 * 1000);
+const hostedAnalysisFiles = [
+  "measurement_catalog.json",
+  "measurement_runs.json",
+  "hotspots.json",
+  "slowspots.json",
+  "search_speed.json",
+  "capacity_report.json",
+  "resource_profiles.json",
+  "speed_efficiency_report.json",
+  "performance_review.json",
+  "clones.json",
+  "type_health.json",
+  "rust_escape_hatches.json",
+  "locality_metrics.json",
+  "leverage_metrics.json",
+  "map.json",
+  "project_code_metrics.json",
+  "flamegraphs.json",
+  "correctness_review.json",
+];
 
 let runs: MeasurementRun[] = loadRuns().map((run) =>
   ["queued", "running"].includes(run.status)
@@ -89,6 +110,15 @@ function projectBoardPlugin(): Plugin {
         fileName: "viewer/data-viewer.js",
         source: await compileViewerController(),
       });
+      for (const relativePath of hostedAnalysisFiles) {
+        emitAnalysisAsset(this, relativePath);
+      }
+      this.emitFile({
+        type: "asset",
+        fileName: "target/analysis/app_package.json",
+        source: `${JSON.stringify(await appPackagePayload(), null, 2)}\n`,
+      });
+      emitAnalysisDirectory(this, "flamegraphs");
     },
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
@@ -120,6 +150,34 @@ function projectBoardPlugin(): Plugin {
       });
     },
   };
+}
+
+function emitAnalysisAsset(plugin: PluginContext, relativePath: string): void {
+  const sourcePath = join(analysisRoot, relativePath);
+  if (!existsSync(sourcePath)) {
+    return;
+  }
+  plugin.emitFile({
+    type: "asset",
+    fileName: `target/analysis/${relativePath.replaceAll("\\", "/")}`,
+    source: readFileSync(sourcePath),
+  });
+}
+
+function emitAnalysisDirectory(plugin: PluginContext, relativePath: string): void {
+  const directory = join(analysisRoot, relativePath);
+  if (!existsSync(directory)) {
+    return;
+  }
+  for (const entry of readdirSync(directory)) {
+    const childRelativePath = join(relativePath, entry);
+    const childPath = join(analysisRoot, childRelativePath);
+    if (statSync(childPath).isDirectory()) {
+      emitAnalysisDirectory(plugin, childRelativePath);
+    } else {
+      emitAnalysisAsset(plugin, childRelativePath);
+    }
+  }
 }
 
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
