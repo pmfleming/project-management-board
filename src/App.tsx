@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./app.css";
+import { ViewerPage } from "./viewer/ViewerPage";
 
 type DemoId = "console" | "studio" | "signal";
 type Tone = "good" | "watch" | "risk" | "info";
@@ -59,6 +60,25 @@ type Series = {
   tone: Tone;
 };
 
+type ChartPad = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+};
+
+type ChartScale = {
+  width: number;
+  height: number;
+  pad: ChartPad;
+  x: (index: number) => number;
+  y: (value: number) => number;
+  yBase: number;
+  yTicks: number[];
+};
+
+type AppRoute = "viewer" | "demos";
+
 const demos: DemoConfig[] = [
   { id: "console", name: "Console", tagline: "Dense ops cockpit" },
   { id: "studio", name: "Studio", tagline: "Editorial brief" },
@@ -90,6 +110,31 @@ const trend = {
 };
 
 const weeks = ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "W10", "W11", "W12"];
+
+const trendSeries: Series[] = [
+  { label: "Quality", values: trend.quality, tone: "good" },
+  { label: "Capacity", values: trend.capacity, tone: "watch" },
+  { label: "Correctness", values: trend.correctness, tone: "info" },
+  { label: "Risk", values: trend.risk, tone: "risk" },
+];
+
+const trendLegend = trendSeries.map(({ label, tone }) => ({ label, tone }));
+
+function BrandWordmark({
+  className = "",
+  compact = false,
+}: {
+  className?: string;
+  compact?: boolean;
+}) {
+  return (
+    <span className={`brand-wordmark ${className}`.trim()} aria-label="scratchpad">
+      <span className="brand-wordmark__scratch">{compact ? "s" : "scratch"}</span>
+      {compact ? null : <span className="brand-wordmark__pad">pad</span>}
+      <span className="brand-wordmark__cursor" aria-hidden="true">_</span>
+    </span>
+  );
+}
 
 const codeBreakdown: RankRow[] = [
   { label: "Application", value: 64, tone: "good" },
@@ -156,31 +201,45 @@ function deltaSign(value: number): "up" | "down" | "flat" {
   return "flat";
 }
 
-function App() {
+function routeFromLocation(): AppRoute {
   const path = window.location.pathname.replace(/\/+$/, "");
-  if (path === "/demos" || path.startsWith("/demo")) {
-    return <DemoStudio />;
-  }
-  return <ViewerRedirect />;
+  return path === "/demos" || path.startsWith("/demo") ? "demos" : "viewer";
 }
 
-function ViewerRedirect() {
+function App() {
+  const [route, setRoute] = useState<AppRoute>(() => routeFromLocation());
+  const [hasOpenedViewer, setHasOpenedViewer] = useState(route === "viewer");
+
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (!params.has("v")) params.set("v", String(Date.now()));
-    window.location.replace(`/viewer/?${params.toString()}`);
+    const syncRoute = () => setRoute(routeFromLocation());
+    window.addEventListener("popstate", syncRoute);
+    return () => window.removeEventListener("popstate", syncRoute);
   }, []);
+
+  useEffect(() => {
+    if (route === "viewer") {
+      setHasOpenedViewer(true);
+    }
+  }, [route]);
+
+  const navigate = (href: string) => {
+    window.history.pushState(null, "", href);
+    setRoute(routeFromLocation());
+  };
+
   return (
-    <main className="redirect-shell">
-      <div className="redirect-card">
-        <p>Opening Project Management Board...</p>
-        <a href="/demos">View workbench variants</a>
-      </div>
-    </main>
+    <>
+      {hasOpenedViewer ? (
+        <div hidden={route !== "viewer"}>
+          <ViewerPage active={route === "viewer"} />
+        </div>
+      ) : null}
+      {route === "demos" ? <DemoStudio navigate={navigate} /> : null}
+    </>
   );
 }
 
-function DemoStudio() {
+function DemoStudio({ navigate }: { navigate: (href: string) => void }) {
   const initial = useMemo<DemoId>(() => {
     const q = new URLSearchParams(window.location.search);
     const requested = q.get("demo") as DemoId | null;
@@ -193,13 +252,18 @@ function DemoStudio() {
     window.history.replaceState(null, "", `/demos?demo=${id}`);
   };
 
+  const openViewer = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    navigate("/viewer/");
+  };
+
   return (
     <main className={`demo-shell demo-shell--${active}`}>
       <header className="demo-topbar">
-        <a className="demo-brand" href="/viewer/">
-          <span className="demo-brand-mark" aria-hidden="true">PM</span>
+        <a className="demo-brand" href="/viewer/" onClick={openViewer}>
+          <span className="demo-brand-mark" aria-hidden="true"><BrandWordmark compact /></span>
           <span className="demo-brand-name">
-            Project Management Board
+            <BrandWordmark />
             <em>Workbench rail · 3 variants</em>
           </span>
         </a>
@@ -219,8 +283,8 @@ function DemoStudio() {
       </header>
 
       {active === "console" && <ConsoleVariant />}
-      {active === "studio" && <StudioVariant />}
-      {active === "signal" && <SignalVariant />}
+      {active === "studio" && <StudioVariant navigate={navigate} />}
+      {active === "signal" && <SignalVariant navigate={navigate} />}
     </main>
   );
 }
@@ -257,19 +321,9 @@ function ConsoleVariant() {
           </header>
           <LineChart
             labels={weeks}
-            series={[
-              { label: "Quality", values: trend.quality, tone: "good" },
-              { label: "Capacity", values: trend.capacity, tone: "watch" },
-              { label: "Correctness", values: trend.correctness, tone: "info" },
-              { label: "Risk", values: trend.risk, tone: "risk" },
-            ]}
+            series={trendSeries}
           />
-          <footer className="chart-legend">
-            <span><i className="dot dot--good" /> Quality</span>
-            <span><i className="dot dot--watch" /> Capacity</span>
-            <span><i className="dot dot--info" /> Correctness</span>
-            <span><i className="dot dot--risk" /> Risk</span>
-          </footer>
+          <ChartLegend items={trendLegend} />
         </article>
 
         <article className="console-table">
@@ -316,7 +370,7 @@ function ConsoleRail() {
   return (
     <aside className="console-rail">
       <div className="console-rail-brand">
-        <strong>PM</strong>
+        <strong><BrandWordmark compact /></strong>
         <span>Architecture<br />review · Q2</span>
       </div>
       <div className="console-rail-section">
@@ -436,10 +490,10 @@ function StatTile({
 
 /* ===== Studio: editorial brief ===== */
 
-function StudioVariant() {
+function StudioVariant({ navigate }: { navigate: (href: string) => void }) {
   return (
     <section className="studio-shell" aria-label="Studio workbench variant">
-      <StudioRail />
+      <StudioRail navigate={navigate} />
       <div className="studio-focus">
         <header className="studio-hero">
           <span className="studio-eyebrow">Release brief · build 487</span>
@@ -463,15 +517,14 @@ function StudioVariant() {
           </header>
           <AreaChart
             labels={weeks}
-            series={[
-              { label: "Quality", values: trend.quality, tone: "good" },
-              { label: "Capacity", values: trend.capacity, tone: "watch" },
+            series={trendSeries.slice(0, 2)}
+          />
+          <ChartLegend
+            items={[
+              { tone: "good", label: "Quality index · 86" },
+              { tone: "watch", label: "Capacity headroom · 74" },
             ]}
           />
-          <footer className="chart-legend">
-            <span><i className="dot dot--good" /> Quality index · 86</span>
-            <span><i className="dot dot--watch" /> Capacity headroom · 74</span>
-          </footer>
         </article>
 
         <div className="studio-evidence">
@@ -500,11 +553,16 @@ function StudioVariant() {
   );
 }
 
-function StudioRail() {
+function StudioRail({ navigate }: { navigate: (href: string) => void }) {
+  const openViewer = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    navigate("/viewer/");
+  };
+
   return (
     <aside className="studio-rail">
-      <a className="studio-rail-brand" href="/viewer/" aria-label="Home">
-        PM
+      <a className="studio-rail-brand" href="/viewer/" aria-label="Home" onClick={openViewer}>
+        <BrandWordmark compact />
       </a>
       <ul>
         {sections.map((s) => (
@@ -578,11 +636,11 @@ function StudioDetail() {
 
 /* ===== Signal: bento dashboard ===== */
 
-function SignalVariant() {
+function SignalVariant({ navigate }: { navigate: (href: string) => void }) {
   const totalTests = layerMatrix.reduce((s, l) => s + l.pass + l.fail + l.unknown, 0);
   return (
     <section className="signal-shell" aria-label="Signal workbench variant">
-      <SignalRail />
+      <SignalRail navigate={navigate} />
       <div className="signal-canvas">
         <article className="signal-tile signal-tile--quality">
           <header>
@@ -710,31 +768,26 @@ function SignalVariant() {
           </header>
           <LineChart
             labels={weeks}
-            series={[
-              { label: "Quality", values: trend.quality, tone: "good" },
-              { label: "Capacity", values: trend.capacity, tone: "watch" },
-              { label: "Correctness", values: trend.correctness, tone: "info" },
-              { label: "Risk", values: trend.risk, tone: "risk" },
-            ]}
+            series={trendSeries}
             large
           />
-          <footer className="chart-legend">
-            <span><i className="dot dot--good" /> Quality</span>
-            <span><i className="dot dot--watch" /> Capacity</span>
-            <span><i className="dot dot--info" /> Correctness</span>
-            <span><i className="dot dot--risk" /> Risk</span>
-          </footer>
+          <ChartLegend items={trendLegend} />
         </article>
       </div>
     </section>
   );
 }
 
-function SignalRail() {
+function SignalRail({ navigate }: { navigate: (href: string) => void }) {
+  const openViewer = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    navigate("/viewer/");
+  };
+
   return (
     <aside className="signal-rail">
-      <a className="signal-rail-brand" href="/viewer/" aria-label="Home">
-        <span aria-hidden="true">PM</span>
+      <a className="signal-rail-brand" href="/viewer/" aria-label="Home" onClick={openViewer}>
+        <BrandWordmark compact />
       </a>
       <ul>
         {sections.map((s) => (
@@ -754,6 +807,113 @@ function SignalRail() {
 }
 
 /* ===== Chart primitives ===== */
+
+const chartWidth = 1000;
+
+function createChartScale({
+  labels,
+  series,
+  height,
+  pad,
+  paddingRatio,
+  showTicks = true,
+}: {
+  labels: string[];
+  series: Series[];
+  height: number;
+  pad: ChartPad;
+  paddingRatio: number;
+  showTicks?: boolean;
+}): ChartScale {
+  const allValues = series.flatMap((s) => s.values);
+  const dataMin = Math.min(...allValues);
+  const dataMax = Math.max(...allValues);
+  const padded = Math.max(2, (dataMax - dataMin) * paddingRatio);
+  const min = Math.floor((dataMin - padded) / 10) * 10;
+  const max = Math.ceil((dataMax + padded) / 10) * 10;
+  const range = max - min || 1;
+  const tickCount = 4;
+
+  return {
+    width: chartWidth,
+    height,
+    pad,
+    x: (index: number) =>
+      pad.left + (index / Math.max(1, labels.length - 1)) * (chartWidth - pad.left - pad.right),
+    y: (value: number) =>
+      pad.top + (1 - (value - min) / range) * (height - pad.top - pad.bottom),
+    yBase: height - pad.bottom,
+    yTicks: showTicks
+      ? Array.from({ length: tickCount + 1 }, (_, i) =>
+          Math.round(min + ((max - min) / tickCount) * i),
+        )
+      : [],
+  };
+}
+
+function chartPath(values: number[], scale: ChartScale) {
+  return values
+    .map((value, index) => `${index === 0 ? "M" : "L"}${scale.x(index).toFixed(2)},${scale.y(value).toFixed(2)}`)
+    .join(" ");
+}
+
+function ChartAxes({
+  labels,
+  scale,
+  showXLabels = true,
+}: {
+  labels: string[];
+  scale: ChartScale;
+  showXLabels?: boolean;
+}) {
+  return (
+    <>
+      {scale.yTicks.map((tick) => (
+        <g key={tick}>
+          <line
+            x1={scale.pad.left}
+            y1={scale.y(tick)}
+            x2={scale.width - scale.pad.right}
+            y2={scale.y(tick)}
+            className="chart-grid"
+          />
+          <text
+            x={scale.pad.left - 10}
+            y={scale.y(tick) + 4}
+            textAnchor="end"
+            className="chart-tick"
+          >
+            {tick}
+          </text>
+        </g>
+      ))}
+      {showXLabels &&
+        labels.map((label, index) => (
+          <text
+            key={label}
+            x={scale.x(index)}
+            y={scale.height - 10}
+            textAnchor="middle"
+            className="chart-tick"
+          >
+            {label}
+          </text>
+        ))}
+    </>
+  );
+}
+
+function ChartLegend({ items }: { items: { tone: Tone; label: string }[] }) {
+  return (
+    <footer className="chart-legend">
+      {items.map((item) => (
+        <span key={item.label}>
+          <i className={`dot dot--${item.tone}`} /> {item.label}
+        </span>
+      ))}
+    </footer>
+  );
+}
 
 function Sparkline({ values, tone }: { values: number[]; tone: Tone }) {
   const { line, area } = useMemo(() => {
@@ -794,67 +954,22 @@ function LineChart({
   series: Series[];
   large?: boolean;
 }) {
-  const width = 1000;
-  const height = large ? 280 : 220;
-  const pad = { top: 18, right: 24, bottom: 32, left: 44 };
-  const allValues = series.flatMap((s) => s.values);
-  const dataMin = Math.min(...allValues);
-  const dataMax = Math.max(...allValues);
-  const padded = Math.max(2, (dataMax - dataMin) * 0.08);
-  const min = Math.floor((dataMin - padded) / 10) * 10;
-  const max = Math.ceil((dataMax + padded) / 10) * 10;
-  const range = max - min || 1;
-
-  const x = (i: number) =>
-    pad.left + (i / (labels.length - 1)) * (width - pad.left - pad.right);
-  const y = (v: number) =>
-    pad.top + (1 - (v - min) / range) * (height - pad.top - pad.bottom);
-
-  const tickCount = 4;
-  const yTicks = Array.from({ length: tickCount + 1 }, (_, i) =>
-    Math.round(min + ((max - min) / tickCount) * i),
-  );
+  const scale = createChartScale({
+    labels,
+    series,
+    height: large ? 280 : 220,
+    pad: { top: 18, right: 24, bottom: 32, left: 44 },
+    paddingRatio: 0.08,
+  });
 
   return (
-    <svg className="chart-line" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-      {yTicks.map((t) => (
-        <g key={t}>
-          <line
-            x1={pad.left}
-            y1={y(t)}
-            x2={width - pad.right}
-            y2={y(t)}
-            className="chart-grid"
-          />
-          <text
-            x={pad.left - 10}
-            y={y(t) + 4}
-            textAnchor="end"
-            className="chart-tick"
-          >
-            {t}
-          </text>
-        </g>
-      ))}
-      {labels.map((l, i) => (
-        <text
-          key={l}
-          x={x(i)}
-          y={height - 10}
-          textAnchor="middle"
-          className="chart-tick"
-        >
-          {l}
-        </text>
-      ))}
+    <svg className="chart-line" viewBox={`0 0 ${scale.width} ${scale.height}`} aria-hidden="true">
+      <ChartAxes labels={labels} scale={scale} />
       {series.map((s) => {
-        const path = s.values
-          .map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(2)},${y(v).toFixed(2)}`)
-          .join(" ");
         return (
           <path
             key={s.label}
-            d={path}
+            d={chartPath(s.values, scale)}
             className={`chart-line-path chart-line-path--${s.tone}`}
           />
         );
@@ -863,8 +978,8 @@ function LineChart({
         s.values.map((v, i) => (
           <circle
             key={`${s.label}-${i}`}
-            cx={x(i)}
-            cy={y(v)}
+            cx={scale.x(i)}
+            cy={scale.y(v)}
             r="2.4"
             className={`chart-dot chart-dot--${s.tone}`}
           />
@@ -883,38 +998,20 @@ function AreaChart({
   series: Series[];
   compact?: boolean;
 }) {
-  const width = 1000;
-  const height = compact ? 140 : 280;
-  const pad = compact
-    ? { top: 6, right: 6, bottom: 8, left: 6 }
-    : { top: 18, right: 24, bottom: 32, left: 44 };
-  const allValues = series.flatMap((s) => s.values);
-  const dataMin = Math.min(...allValues);
-  const dataMax = Math.max(...allValues);
-  const padded = Math.max(2, (dataMax - dataMin) * 0.10);
-  const min = Math.floor((dataMin - padded) / 10) * 10;
-  const max = Math.ceil((dataMax + padded) / 10) * 10;
-  const range = max - min || 1;
-
-  const x = (i: number) =>
-    pad.left + (i / (labels.length - 1)) * (width - pad.left - pad.right);
-  const y = (v: number) =>
-    pad.top + (1 - (v - min) / range) * (height - pad.top - pad.bottom);
-  const yBase = height - pad.bottom;
-
-  const tickCount = 4;
-  const yTicks = compact
-    ? []
-    : Array.from({ length: tickCount + 1 }, (_, i) =>
-        Math.round(min + ((max - min) / tickCount) * i),
-      );
-
+  const scale = createChartScale({
+    labels,
+    series,
+    height: compact ? 140 : 280,
+    pad: compact ? { top: 6, right: 6, bottom: 8, left: 6 } : { top: 18, right: 24, bottom: 32, left: 44 },
+    paddingRatio: 0.1,
+    showTicks: !compact,
+  });
   const gradSuffix = compact ? "-c" : "";
 
   return (
     <svg
       className={`chart-area${compact ? " chart-area--compact" : ""}`}
-      viewBox={`0 0 ${width} ${height}`}
+      viewBox={`0 0 ${scale.width} ${scale.height}`}
       aria-hidden="true"
     >
       <defs>
@@ -932,42 +1029,10 @@ function AreaChart({
           </linearGradient>
         ))}
       </defs>
-      {yTicks.map((t) => (
-        <g key={t}>
-          <line
-            x1={pad.left}
-            y1={y(t)}
-            x2={width - pad.right}
-            y2={y(t)}
-            className="chart-grid"
-          />
-          <text
-            x={pad.left - 10}
-            y={y(t) + 4}
-            textAnchor="end"
-            className="chart-tick"
-          >
-            {t}
-          </text>
-        </g>
-      ))}
-      {!compact &&
-        labels.map((l, i) => (
-          <text
-            key={l}
-            x={x(i)}
-            y={height - 10}
-            textAnchor="middle"
-            className="chart-tick"
-          >
-            {l}
-          </text>
-        ))}
+      <ChartAxes labels={labels} scale={scale} showXLabels={!compact} />
       {series.map((s) => {
-        const linePath = s.values
-          .map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(2)},${y(v).toFixed(2)}`)
-          .join(" ");
-        const areaPath = `${linePath} L${x(s.values.length - 1).toFixed(2)},${yBase} L${x(0).toFixed(2)},${yBase} Z`;
+        const linePath = chartPath(s.values, scale);
+        const areaPath = `${linePath} L${scale.x(s.values.length - 1).toFixed(2)},${scale.yBase} L${scale.x(0).toFixed(2)},${scale.yBase} Z`;
         return (
           <g key={s.label}>
             <path d={areaPath} fill={`url(#grad-${s.tone}${gradSuffix})`} />

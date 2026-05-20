@@ -3,9 +3,9 @@
 React and TypeScript dashboard host for Scratchpad measurement artifacts.
 
 The Vite dev server replaces Scratchpad's old Python localhost dashboard server.
-It serves the migrated dashboard under `/viewer/`, exposes the dashboard API
-routes under `/api/`, and serves Scratchpad JSON artifacts from
-`/target/analysis/`.
+It serves the migrated dashboard as a React single-page app at `/` and
+`/viewer/`, exposes the dashboard API routes under `/api/`, and serves
+Scratchpad JSON artifacts from `/target/analysis/`.
 
 ## Development
 

@@ -31,35 +31,23 @@ button {
   cursor: pointer;
 }
 
-/* ===== Redirect ===== */
+/* ===== Viewer mount ===== */
 
-.redirect-shell {
+.viewer-load-state {
   display: grid;
   min-height: 100vh;
   place-items: center;
+  gap: 10px;
+  padding: 24px;
   background: #0a0d10;
-}
-
-.redirect-card {
-  display: grid;
-  gap: 12px;
-  padding: 18px 22px;
-  border: 1px solid #2a333c;
-  border-radius: 8px;
-  background: #11161c;
-}
-
-.redirect-card p {
-  margin: 0;
   color: #dbe5ef;
   font-size: 14px;
-  font-weight: 700;
 }
 
-.redirect-card a {
+.viewer-load-state code {
+  max-width: min(720px, 100%);
   color: #8fd8ff;
-  font-size: 13px;
-  text-decoration: none;
+  white-space: pre-wrap;
 }
 
 /* ===== Tokens / shell ===== */
@@ -145,6 +133,36 @@ button {
   text-decoration: none;
 }
 
+.brand-wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  color: inherit;
+  font-family:
+    "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, SFMono-Regular,
+    Menlo, monospace;
+  font-weight: 350;
+  letter-spacing: 0.075em;
+  line-height: 1;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.brand-wordmark__scratch {
+  font-weight: 300;
+}
+
+.brand-wordmark__pad {
+  font-weight: 400;
+}
+
+.brand-wordmark__cursor {
+  color: var(--brand-cursor, var(--info));
+  font-weight: 500;
+  letter-spacing: 0;
+  margin-left: 0.1em;
+}
+
 .demo-brand-mark {
   display: grid;
   width: 34px;
@@ -152,11 +170,12 @@ button {
   place-items: center;
   border-radius: 8px;
   background: linear-gradient(135deg, var(--good), var(--info));
-  color: #06080a;
-  font-family: var(--mono);
-  font-size: 14px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
+  color: var(--ink);
+  --brand-cursor: #00448c;
+}
+
+.demo-brand-mark .brand-wordmark {
+  font-size: 17px;
 }
 
 .demo-brand-name {
@@ -165,6 +184,11 @@ button {
   font-size: 14px;
   font-weight: 800;
   line-height: 1.1;
+}
+
+.demo-brand-name .brand-wordmark {
+  --brand-cursor: #00448c;
+  font-size: 15px;
 }
 
 .demo-brand-name em {
@@ -579,14 +603,15 @@ button {
   place-items: center;
   border-radius: 8px;
   background: linear-gradient(135deg, var(--good), var(--info));
-  color: #06080a;
-  font-family: var(--mono);
-  font-size: 14px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
+  color: var(--ink);
+  --brand-cursor: #00448c;
 }
 
-.console-rail-brand span {
+.console-rail-brand strong .brand-wordmark {
+  font-size: 18px;
+}
+
+.console-rail-brand > span {
   color: var(--soft);
   font-family: var(--mono);
   font-size: 11px;
@@ -1044,12 +1069,13 @@ button {
   place-items: center;
   border-radius: 10px;
   background: linear-gradient(135deg, var(--risk), #ff95b4);
-  color: #1a0a0a;
-  font-family: var(--mono);
-  font-size: 16px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
+  color: var(--ink);
+  --brand-cursor: #00448c;
   text-decoration: none;
+}
+
+.studio-rail-brand .brand-wordmark {
+  font-size: 18px;
 }
 
 .studio-rail ul {
@@ -1443,12 +1469,13 @@ button {
   place-items: center;
   border-radius: 12px;
   background: linear-gradient(135deg, var(--info), var(--risk));
-  color: #08090b;
-  font-family: var(--mono);
-  font-size: 14px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
+  color: var(--ink);
+  --brand-cursor: #00448c;
   text-decoration: none;
+}
+
+.signal-rail-brand .brand-wordmark {
+  font-size: 18px;
 }
 
 .signal-rail ul {

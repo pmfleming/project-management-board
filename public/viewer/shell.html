@@ -7,7 +7,14 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <title>Project Management Board</title>
+    <link rel="icon" href="/favicon.ico?v=20260520-brand-blue" sizes="any" />
+    <link rel="icon" href="favicon-32.png?v=20260520-brand-blue" sizes="32x32" type="image/png" />
+    <link rel="icon" href="icon-192.png?v=20260520-brand-blue" sizes="192x192" type="image/png" />
+    <link rel="apple-touch-icon" href="icon-180.png?v=20260520-brand-blue" sizes="180x180" />
+    <link rel="manifest" href="/site.webmanifest?v=20260520-brand-blue" />
+    <meta name="theme-color" content="#00448c" />
+    <meta name="apple-mobile-web-app-title" content="scratchpad_" />
+    <title>scratchpad_</title>
     <script>
         if (!["localhost", "127.0.0.1", "::1", ""].includes(window.location.hostname)) {
             document.documentElement.dataset.staticHost = "true";
@@ -17,32 +24,32 @@
     </script>
 </head>
 
-<body>
+<body data-active-tab="overview">
     <main class="app-shell workbench-shell">
         <aside class="workbench-rail" aria-label="Dashboard navigation and context">
-            <a class="workbench-brand" href="/viewer/">
+            <a class="workbench-brand" href="#purpose" data-tab-target="purpose" aria-controls="purpose">
                 <span class="scratchpad-mark" aria-hidden="true">
-                    <img src="scratchpad.svg" alt="" />
+                    <img src="/viewer/icon-192.png?v=20260520-brand-blue" alt="" />
                 </span>
-                <strong>Scratchpad</strong>
+                <strong id="workbench-brand-label" class="brand-wordmark brand-wordmark--rail">
+                    <span class="brand-wordmark__scratch">scratch</span><span class="brand-wordmark__pad">pad</span><span class="brand-wordmark__cursor" aria-hidden="true">_</span>
+                </strong>
             </a>
 
-            <nav class="tabs" aria-label="Metric views">
-                <button class="tab is-active tab--purpose" data-tab="purpose">
-                    <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12c2.2-7.2 4.2-7.2 4 0s3.2 7.2 5.5 0 4.3-7.2 4.5 0" /><path d="M19 5v14" /></svg></span>Scratchpad</button>
-                <button class="tab tab--overview" data-tab="overview">
+            <nav class="tabs" aria-label="Metric views" role="tablist">
+                <button id="tab-overview" class="tab is-active tab--overview" type="button" role="tab" aria-controls="overview" aria-selected="true" data-tab="overview">
                     <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z" /></svg></span>Overview</button>
-                <button class="tab tab--telemetry" data-tab="app-package">
+                <button id="tab-app-package" class="tab tab--telemetry" type="button" role="tab" aria-controls="app-package" aria-selected="false" data-tab="app-package">
                     <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-7 4 14 2-7h6" /></svg></span>Telemetry</button>
-                <button class="tab tab--quality" data-tab="quality-review">
+                <button id="tab-quality-review" class="tab tab--quality" type="button" role="tab" aria-controls="quality-review" aria-selected="false" data-tab="quality-review">
                     <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z" /><path d="m8.5 12 2.2 2.2 4.8-5" /></svg></span>Quality</button>
-                <button class="tab tab--performance" data-tab="performance-review">
+                <button id="tab-performance-review" class="tab tab--performance" type="button" role="tab" aria-controls="performance-review" aria-selected="false" data-tab="performance-review">
                     <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 14a8 8 0 1 1 16 0" /><path d="M12 14 16 9" /><path d="M7 14h10" /></svg></span>Performance</button>
-                <button class="tab tab--correctness" data-tab="correctness-review">
+                <button id="tab-correctness-review" class="tab tab--correctness" type="button" role="tab" aria-controls="correctness-review" aria-selected="false" data-tab="correctness-review">
                     <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 11v1a9 9 0 1 1-5.3-8.2" /><path d="m9 11 3 3L22 4" /></svg></span>Correctness</button>
-                <button class="tab tab--map" data-tab="map">
+                <button id="tab-map" class="tab tab--map" type="button" role="tab" aria-controls="map" aria-selected="false" data-tab="map">
                     <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3" /><circle cx="18" cy="7" r="3" /><circle cx="12" cy="17" r="3" /><path d="M8.7 8.7 10.5 14M15.3 8.7 13.5 14" /></svg></span>Map</button>
-                <button class="tab tab--log" data-tab="run-log">
+                <button id="tab-run-log" class="tab tab--log" type="button" role="tab" aria-controls="run-log" aria-selected="false" data-tab="run-log">
                     <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z" /><path d="m8 9 3 3-3 3" /><path d="M13 15h4" /></svg></span>Log</button>
             </nav>
 
@@ -62,34 +69,36 @@
         <div class="workbench-main">
             <div class="workbench-content">
 
-        <section id="purpose" class="tab-panel is-active">
+        <section id="purpose" class="tab-panel" role="tabpanel" aria-labelledby="workbench-brand-label" aria-hidden="true">
             <div class="category-header">
                 <div class="page-title-lockup">
                     <div class="page-icon page-icon--purpose" aria-hidden="true">
-                        <img src="scratchpad.svg" alt="" />
+                        <img src="/viewer/icon-192.png?v=20260520-brand-blue" alt="" />
                     </div>
-                    <h1 id="purpose-title">Scratchpad</h1>
+                    <h1 id="purpose-title" class="brand-wordmark brand-wordmark--page">
+                        <span class="brand-wordmark__scratch">scratch</span><span class="brand-wordmark__pad">pad</span><span class="brand-wordmark__cursor" aria-hidden="true">_</span>
+                    </h1>
                 </div>
             </div>
             <section class="purpose-panel" aria-labelledby="purpose-title">
                 <div class="purpose-intro">
-                    <p>This website demonstrates a practical path for building analytical dashboards with modern web technologies and AI.</p>
+                    <p><span class="brand-wordmark brand-wordmark--inline"><span class="brand-wordmark__scratch">scratch</span><span class="brand-wordmark__pad">pad</span><span class="brand-wordmark__cursor" aria-hidden="true">_</span></span> is a replacement for Notepad, focused on plain text because so many good text editors drift toward becoming code editors. This is the project management console used to build it.</p>
                 </div>
                 <ol class="purpose-list">
                     <li>
                         <span class="purpose-list__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4z" /><path d="M14 20h6V4h-6z" /><path d="M4 20h6v-3H4z" /></svg></span>
-                        <strong>Build dashboards faster.</strong>
-                        <span class="purpose-list__copy">Show how quickly a usable dashboard can be assembled with web technologies and AI-assisted development.</span>
+                        <strong>Keep it plain.</strong>
+                        <span class="purpose-list__copy">Scratchpad is for fast, reliable text work first, without treating every note as code.</span>
                     </li>
                     <li>
                         <span class="purpose-list__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19h16" /><path d="M7 15c4.8 0 7.8-2.5 10-8" /><path d="m13 7 4 0 0 4" /></svg></span>
-                        <strong>Lower the cost of custom analytics.</strong>
-                        <span class="purpose-list__copy">Offer a more flexible and performant alternative to heavier BI tools such as Power BI when the workflow needs bespoke behavior.</span>
+                        <strong>Prove it scales.</strong>
+                        <span class="purpose-list__copy">The editor must open large files, keep lots of them available, then search and edit them without slowing down.</span>
                     </li>
                     <li>
                         <span class="purpose-list__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v18" /><path d="M5 8h14" /><path d="M7 8l-3 6h6z" /><path d="M17 8l-3 6h6z" /></svg></span>
-                        <strong>Guide AI with deterministic measurement.</strong>
-                        <span class="purpose-list__copy">Use repeatable metrics and evidence to steer AI development instead of relying on subjective inspection alone.</span>
+                        <strong>Build for one user.</strong>
+                        <span class="purpose-list__copy">The console is highly opinionated because Scratchpad has a target user base of one.</span>
                     </li>
                 </ol>
                 <div class="purpose-detail-grid">
@@ -98,31 +107,31 @@
                         <dl class="tab-measure-list">
                             <div>
                                 <dt><a href="#overview" data-tab-target="overview"><span class="tab-measure-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z" /></svg></span>Overview</a></dt>
-                                <dd><a href="#overview" data-tab-target="overview">Summarizes project code volume, risk distribution, and high-level dashboard confidence.</a></dd>
+                                <dd><a href="#overview" data-tab-target="overview">Shows the score across Quality, Capacity, and Correctness, plus the FPS score that keeps redraw speed visible.</a></dd>
                             </div>
                             <div>
                                 <dt><a href="#app-package" data-tab-target="app-package"><span class="tab-measure-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-7 4 14 2-7h6" /></svg></span>Telemetry</a></dt>
-                                <dd><a href="#app-package" data-tab-target="app-package">Tracks live app package state, including sessions, tabs, buffers, diagnostics, and files.</a></dd>
+                                <dd><a href="#app-package" data-tab-target="app-package">Monitors Scratchpad while it is running, including sessions, tabs, buffers, diagnostics, and files.</a></dd>
                             </div>
                             <div>
                                 <dt><a href="#quality-review" data-tab-target="quality-review"><span class="tab-measure-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z" /><path d="m8.5 12 2.2 2.2 4.8-5" /></svg></span>Quality</a></dt>
-                                <dd><a href="#quality-review" data-tab-target="quality-review">Measures maintainability, duplication, type health, escape hatches, locality, and leverage.</a></dd>
+                                <dd><a href="#quality-review" data-tab-target="quality-review">Measures code quality goals that keep Scratchpad easy to maintain, fast to change, and reliable.</a></dd>
                             </div>
                             <div>
                                 <dt><a href="#performance-review" data-tab-target="performance-review"><span class="tab-measure-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 14a8 8 0 1 1 16 0" /><path d="M12 14 16 9" /><path d="M7 14h10" /></svg></span>Performance</a></dt>
-                                <dd><a href="#performance-review" data-tab-target="performance-review">Measures workload capacity, latency, memory and allocation cost, and tab-management phases.</a></dd>
+                                <dd><a href="#performance-review" data-tab-target="performance-review">Checks whether the editor can open large files, handle many open files, then search and edit them.</a></dd>
                             </div>
                             <div>
                                 <dt><a href="#correctness-review" data-tab-target="correctness-review"><span class="tab-measure-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 11v1a9 9 0 1 1-5.3-8.2" /><path d="m9 11 3 3L22 4" /></svg></span>Correctness</a></dt>
-                                <dd><a href="#correctness-review" data-tab-target="correctness-review">Measures validation layers, test evidence, and pass/fail signals for the measured system.</a></dd>
+                                <dd><a href="#correctness-review" data-tab-target="correctness-review">Runs tests that lock in functionality and catch regressions when one area is fixed or improved.</a></dd>
                             </div>
                             <div>
                                 <dt><a href="#map" data-tab-target="map"><span class="tab-measure-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3" /><circle cx="18" cy="7" r="3" /><circle cx="12" cy="17" r="3" /><path d="M8.7 8.7 10.5 14M15.3 8.7 13.5 14" /></svg></span>Map</a></dt>
-                                <dd><a href="#map" data-tab-target="map">Shows dependency relationships and risk concentration across modules.</a></dd>
+                                <dd><a href="#map" data-tab-target="map">Shows the inputs, outputs, dependencies, and risk concentration for each module.</a></dd>
                             </div>
                             <div>
                                 <dt><a href="#run-log" data-tab-target="run-log"><span class="tab-measure-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z" /><path d="m8 9 3 3-3 3" /><path d="M13 15h4" /></svg></span>Log</a></dt>
-                                <dd><a href="#run-log" data-tab-target="run-log">Records run history, artifact freshness, and measurement execution status.</a></dd>
+                                <dd><a href="#run-log" data-tab-target="run-log">Records the Quality, Performance, and Test tasks that ran, plus the JSON artifacts they created.</a></dd>
                             </div>
                         </dl>
                     </section>
@@ -134,8 +143,8 @@
                                 <span>Open the GitHub releases page for the current Windows build.</span>
                             </li>
                             <li>
-                                <a href="https://github.com/pmfleming/scratchpad" target="_blank" rel="noreferrer"><svg class="github-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 8.4 22.9c.58.1.79-.25.79-.56v-2c-3.21.7-3.89-1.38-3.89-1.38-.53-1.33-1.29-1.68-1.29-1.68-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.26-1.28-5.26-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.05 0 0 .97-.31 3.17 1.18A10.9 10.9 0 0 1 12 6.32c.98 0 1.95.13 2.87.39 2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.27 5.69.41.36.78 1.06.78 2.14v3.18c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" /></svg>Scratchpad app</a>
-                                <span>Because Notepad is terrible.</span>
+                                <a href="https://github.com/pmfleming/scratchpad" target="_blank" rel="noreferrer"><svg class="github-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 8.4 22.9c.58.1.79-.25.79-.56v-2c-3.21.7-3.89-1.38-3.89-1.38-.53-1.33-1.29-1.68-1.29-1.68-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.26-1.28-5.26-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.05 0 0 .97-.31 3.17 1.18A10.9 10.9 0 0 1 12 6.32c.98 0 1.95.13 2.87.39 2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.27 5.69.41.36.78 1.06.78 2.14v3.18c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" /></svg>scratchpad_ app</a>
+                                <span>Source for the measured scratchpad_ application.</span>
                             </li>
                             <li>
                                 <a href="https://github.com/pmfleming/project-management-board" target="_blank" rel="noreferrer"><svg class="github-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 8.4 22.9c.58.1.79-.25.79-.56v-2c-3.21.7-3.89-1.38-3.89-1.38-.53-1.33-1.29-1.68-1.29-1.68-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.26-1.28-5.26-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.05 0 0 .97-.31 3.17 1.18A10.9 10.9 0 0 1 12 6.32c.98 0 1.95.13 2.87.39 2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.27 5.69.41.36.78 1.06.78 2.14v3.18c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" /></svg>Dashboard viewer</a>
@@ -155,7 +164,7 @@
             </section>
         </section>
 
-        <section id="overview" class="tab-panel">
+        <section id="overview" class="tab-panel is-active" role="tabpanel" aria-labelledby="tab-overview" aria-hidden="false">
             <div class="category-header">
                 <div class="page-title-lockup">
                     <div class="page-icon page-icon--overview" aria-hidden="true">
@@ -201,7 +210,7 @@
                         </div>
                         <label class="risk-filter-control">
                             <span>Filter</span>
-                            <select id="overview-risk-filter" class="filter-input">
+                            <select id="overview-risk-filter" name="overview-risk-filter" class="filter-input">
                                 <option value="all">All risk levels</option>
                                 <option value="high">High only</option>
                                 <option value="with-signals">Has signals</option>
@@ -229,7 +238,7 @@
             </div>
         </section>
 
-        <section id="quality-review" class="tab-panel">
+        <section id="quality-review" class="tab-panel" role="tabpanel" aria-labelledby="tab-quality-review" aria-hidden="true">
             <div class="category-header">
                 <div class="page-title-lockup">
                     <div class="page-icon page-icon--quality" aria-hidden="true">
@@ -411,7 +420,7 @@
                         </div>
                         <div class="quality-dataset-tools">
                             <button class="run-button" data-run-item="quality.hotspots">Refresh</button>
-                            <input id="hotspots-filter" class="filter-input" type="search"
+                            <input id="hotspots-filter" name="hotspots-filter" class="filter-input" type="search"
                                 placeholder="Filter hotspots..." />
                             <button type="button" class="filter-clear-button" data-clear-quality-filter="hotspots">Clear filter</button>
                         </div>
@@ -426,7 +435,7 @@
                         </div>
                         <div class="quality-dataset-tools">
                             <button class="run-button" data-run-item="quality.clones">Refresh</button>
-                            <input id="clones-filter" class="filter-input" type="search"
+                            <input id="clones-filter" name="clones-filter" class="filter-input" type="search"
                                 placeholder="Filter clones..." />
                             <button type="button" class="filter-clear-button" data-clear-quality-filter="clones">Clear filter</button>
                         </div>
@@ -441,7 +450,7 @@
                         </div>
                         <div class="quality-dataset-tools">
                             <button class="run-button" data-run-item="quality.type_health">Refresh</button>
-                            <input id="type-health-filter" class="filter-input" type="search"
+                            <input id="type-health-filter" name="type-health-filter" class="filter-input" type="search"
                                 placeholder="Filter structural health..." />
                             <button type="button" class="filter-clear-button" data-clear-quality-filter="typeHealth">Clear filter</button>
                         </div>
@@ -457,7 +466,7 @@
                         </div>
                         <div class="quality-dataset-tools">
                             <button class="run-button" data-run-item="quality.escape_hatches">Refresh</button>
-                            <input id="escape-hatches-filter" class="filter-input" type="search"
+                            <input id="escape-hatches-filter" name="escape-hatches-filter" class="filter-input" type="search"
                                 placeholder="Filter escape hatches..." />
                             <button type="button" class="filter-clear-button" data-clear-quality-filter="escapeHatches">Clear filter</button>
                         </div>
@@ -473,7 +482,7 @@
                         </div>
                         <div class="quality-dataset-tools">
                             <button class="run-button" data-run-item="quality.locality_dynamic">Refresh</button>
-                            <input id="locality-filter" class="filter-input" type="search"
+                            <input id="locality-filter" name="locality-filter" class="filter-input" type="search"
                                 placeholder="Filter code locality..." />
                             <button type="button" class="filter-clear-button" data-clear-quality-filter="locality">Clear filter</button>
                         </div>
@@ -488,7 +497,7 @@
                         </div>
                         <div class="quality-dataset-tools">
                             <button class="run-button" data-run-item="quality.locality_leverage">Refresh</button>
-                            <input id="leverage-filter" class="filter-input" type="search"
+                            <input id="leverage-filter" name="leverage-filter" class="filter-input" type="search"
                                 placeholder="Filter leverage..." />
                             <button type="button" class="filter-clear-button" data-clear-quality-filter="leverage">Clear filter</button>
                         </div>
@@ -499,7 +508,7 @@
             </div>
         </section>
 
-        <section id="performance-review" class="tab-panel">
+        <section id="performance-review" class="tab-panel" role="tabpanel" aria-labelledby="tab-performance-review" aria-hidden="true">
             <div class="category-header">
                 <div class="page-title-lockup">
                     <div class="page-icon page-icon--performance" aria-hidden="true">
@@ -538,13 +547,14 @@
             </div>
 
             <div class="panel-card performance-review-coverage">
-                <div class="panel-card__header">
-                    <div>
+                <div class="panel-card__header performance-promise-header">
+                    <div class="performance-promise-title">
+                        <span class="performance-promise-kicker">Promise review</span>
                         <h2>Promise Details &amp; Evidence</h2>
                         <p>Pick a promise once, then review its progress and supporting evidence.</p>
                     </div>
                     <div class="performance-global-tools" aria-label="Performance dataset search">
-                        <input id="performance-dataset-search" class="filter-input performance-global-search"
+                        <input id="performance-dataset-search" name="performance-dataset-search" class="filter-input performance-global-search"
                             type="search" placeholder="Search selected promise evidence..." />
                     </div>
                     <button class="run-button" data-run-item="performance.report">Refresh Review</button>
@@ -566,7 +576,7 @@
             </div>
         </section>
 
-        <section id="correctness-review" class="tab-panel">
+        <section id="correctness-review" class="tab-panel" role="tabpanel" aria-labelledby="tab-correctness-review" aria-hidden="true">
             <div class="category-header correctness-header">
                 <div class="page-title-lockup">
                     <div class="page-icon page-icon--correctness" aria-hidden="true">
@@ -606,9 +616,9 @@
                     <div class="correctness-toolbar">
                         <button class="run-button" data-run-item="correctness.catalog">Refresh Catalog</button>
                         <button class="run-button" data-run-item="correctness.all">Run All Tests</button>
-                        <label class="toggle-control"><input id="correctness-show-all" type="checkbox" /> Show passed
+                        <label class="toggle-control"><input id="correctness-show-all" name="correctness-show-all" type="checkbox" /> Show passed
                             tests</label>
-                        <input id="correctness-filter" class="filter-input" type="search" placeholder="Filter tests..." />
+                        <input id="correctness-filter" name="correctness-filter" class="filter-input" type="search" placeholder="Filter tests..." />
                     </div>
                 </div>
                 <div id="correctness-table-note" class="table-note"></div>
@@ -616,7 +626,7 @@
             </div>
         </section>
 
-        <section id="map" class="tab-panel">
+        <section id="map" class="tab-panel" role="tabpanel" aria-labelledby="tab-map" aria-hidden="true">
             <div class="category-header">
                 <div class="page-title-lockup">
                     <div class="page-icon page-icon--map" aria-hidden="true">
@@ -637,18 +647,18 @@
                         <div class="map-controls">
                             <label class="zoom-control">
                                 <span>Focus Mode</span>
-                                <input id="map-focus" type="checkbox" />
+                                <input id="map-focus" name="map-focus" type="checkbox" />
                             </label>
                             <label class="zoom-control">
                                 <span>Layout</span>
-                                <select id="map-layout" class="filter-input" style="padding: 4px 8px; font-size: 13px;">
+                                <select id="map-layout" name="map-layout" class="filter-input" style="padding: 4px 8px; font-size: 13px;">
                                     <option value="folder">Folder Structure</option>
                                     <option value="layer">Architectural Layers</option>
                                 </select>
                             </label>
                             <label class="zoom-control">
                                 <span>Metric Color</span>
-                                <select id="map-metric" class="filter-input" style="padding: 4px 8px; font-size: 13px;">
+                                <select id="map-metric" name="map-metric" class="filter-input" style="padding: 4px 8px; font-size: 13px;">
                                     <option value="total_score">Total Risk</option>
                                     <option value="quality">Quality Risk</option>
                                     <option value="maintainability">Maintainability Risk</option>
@@ -661,10 +671,10 @@
                                     <option value="churn">Churn</option>
                                 </select>
                             </label>
-                            <input id="map-filter" class="filter-input" type="search" placeholder="Filter modules..." />
+                            <input id="map-filter" name="map-filter" class="filter-input" type="search" placeholder="Filter modules..." />
                             <label class="zoom-control">
                                 <span>Zoom <strong id="map-zoom-value">65%</strong></span>
-                                <input id="map-zoom" type="range" min="0.45" max="1.4" step="0.05" value="0.65" />
+                                <input id="map-zoom" name="map-zoom" type="range" min="0.45" max="1.4" step="0.05" value="0.65" />
                             </label>
                         </div>
                     </div>
@@ -677,7 +687,7 @@
             </div>
         </section>
 
-        <section id="app-package" class="tab-panel">
+        <section id="app-package" class="tab-panel" role="tabpanel" aria-labelledby="tab-app-package" aria-hidden="true">
             <div class="category-header">
                 <div class="page-title-lockup">
                     <div class="page-icon page-icon--telemetry" aria-hidden="true">
@@ -720,7 +730,7 @@
                                 </div>
                                 <div class="app-package-panel-tools">
                                     <span id="app-package-diagnostics-count" class="app-package-count">0 events</span>
-                                    <input id="app-package-diagnostics-filter" class="filter-input" type="search"
+                                    <input id="app-package-diagnostics-filter" name="app-package-diagnostics-filter" class="filter-input" type="search"
                                         placeholder="Filter diagnostics..." />
                                 </div>
                             </div>
@@ -740,7 +750,7 @@
                                         id="app-package-clear-buffers"
                                         title="Delete all persisted session tabs and buffer snapshot data, including dirty buffers">Clear
                                         buffers</button>
-                                    <input id="app-package-buffer-filter" class="filter-input" type="search"
+                                    <input id="app-package-buffer-filter" name="app-package-buffer-filter" class="filter-input" type="search"
                                         placeholder="Filter buffers..." />
                                 </div>
                             </div>
@@ -807,7 +817,7 @@
             </div>
         </section>
 
-        <section id="run-log" class="tab-panel">
+        <section id="run-log" class="tab-panel" role="tabpanel" aria-labelledby="tab-run-log" aria-hidden="true">
             <div class="category-header">
                 <div class="page-title-lockup">
                     <div class="page-icon page-icon--log" aria-hidden="true">

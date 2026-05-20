@@ -1,6 +1,7 @@
 // @ts-nocheck
 (function () {
     const viewerVersion = window.SCRATCHPAD_VIEWER_VERSION || "dev";
+    const isStaticHost = document.documentElement.dataset.staticHost === "true";
     const sources = {
         catalog: `../target/analysis/measurement_catalog.json?v=${viewerVersion}`,
         runs: `../target/analysis/measurement_runs.json?v=${viewerVersion}`,
@@ -20,7 +21,9 @@
         projectCodeMetrics: `../target/analysis/project_code_metrics.json?v=${viewerVersion}`,
         flamegraphs: `../target/analysis/flamegraphs.json?v=${viewerVersion}`,
         correctness: `../target/analysis/correctness_review.json?v=${viewerVersion}`,
-        appPackage: `../target/analysis/app_package.json?v=${viewerVersion}`,
+        appPackage: isStaticHost
+            ? `../target/analysis/app_package.json?v=${viewerVersion}`
+            : `/api/app-package?v=${viewerVersion}`,
     };
 
     const state = {
@@ -81,11 +84,17 @@
             capacity: 'counts',
             resources: 'counts',
         },
+        performanceRenderEpoch: 0,
         searchChartScope: 'tabs',
         appPackageView: 'diagnostics',
+        appPackageLoadState: 'idle',
     };
 
+    const renderedTabs = new Set();
+    const scheduledTabRenders = new Map();
+
     const activeRunStatuses = new Set(["queued", "running"]);
+    const maxRenderedTableRows = 250;
 
     const formatNumber = new Intl.NumberFormat(undefined, {
         maximumFractionDigits: 2,
@@ -380,8 +389,12 @@
         const target = byId(targetId);
         if (!target) return;
         const head = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
-        const body = rows.length
-            ? rows.join("")
+        const visibleRows = rows.slice(0, maxRenderedTableRows);
+        const capNotice = rows.length > visibleRows.length
+            ? `<tr><td colspan="${headers.length}" class="muted">Showing ${formatNumber.format(visibleRows.length)} of ${formatNumber.format(rows.length)} rows. Use the filter to narrow this table.</td></tr>`
+            : "";
+        const body = visibleRows.length
+            ? `${visibleRows.join("")}${capNotice}`
             : `<tr><td colspan="${headers.length}" class="muted">No data loaded.</td></tr>`;
         target.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
     }
@@ -1358,16 +1371,22 @@
         const sorted = [...rows]
             .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
             .slice(0, 15);
+        const scenarioIds = new Set((state.performanceReview?.scenarios || []).map((scenario) => scenario.id));
         target.innerHTML = sorted.map((row, index) => {
             const cls = row.x >= 1 && row.y >= 1 ? "bad" : row.x >= 1 || row.y >= 1 ? "watch" : "ok";
-            return `<div class="performance-focus-row" style="--promise-color:${escapeHtml(row.color || performancePromiseColor(row.promiseId || row.label))}" aria-label="${escapeHtml(row.label)} risk register row">
+            const promiseId = scenarioIds.has(row.promiseId) ? row.promiseId : "";
+            const tag = promiseId ? "button" : "div";
+            const attributes = promiseId
+                ? `type="button" data-promise-focus="${escapeHtml(promiseId)}" title="Open ${escapeHtml(row.promiseTitle || row.label)} evidence"`
+                : "";
+            return `<${tag} ${attributes} class="performance-focus-row" style="--promise-color:${escapeHtml(row.color || performancePromiseColor(row.promiseId || row.label))}" aria-label="${escapeHtml(row.label)} risk register row">
                 <span class="rank-pill">${index + 1}</span>
                 <span class="performance-focus-row__main">
                     <strong>${escapeHtml(row.label)}</strong>
                     <em>${escapeHtml(`${row.promiseTitle || "Unmapped"} - ${formatRatio(row.x)} load - ${formatRatio(row.y)} latency/unit`)}</em>
                 </span>
                 <span class="status-pill status-pill--${cls}">${escapeHtml(formatRatio(row.score || 0))}</span>
-            </div>`;
+            </${tag}>`;
         }).join("");
     }
 
@@ -2015,7 +2034,7 @@
             state.selectedPerformanceScenarioId = scenarios[0].id;
         }
         const selected = scenarios.find((scenario) => scenario.id === state.selectedPerformanceScenarioId) || scenarios[0];
-        target.innerHTML = `<div class="promise-tabs" role="tablist" aria-label="Performance promises">
+        target.innerHTML = `<div class="promise-tabs" role="tablist" aria-label="Performance promises" style="--promise-tab-count:${scenarios.length}">
             ${scenarios.map((scenario) => {
             const status = scenarioStatus(scenario);
             const missCount = Number(scenario.budget_misses || 0);
@@ -2150,9 +2169,10 @@
     }
 
     function renderPerformanceSectionWithFilter(scenarioId, sectionId, value, placeholder, content) {
+        const filterName = `performance-${scenarioId}-${sectionId}-filter`;
         return `<section class="performance-evidence-section">
             <div class="performance-section-toolbar">
-                <input class="filter-input" type="search" data-performance-section-filter="${escapeHtml(sectionId)}" data-performance-scenario-id="${escapeHtml(scenarioId)}" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" />
+                <input class="filter-input" name="${escapeHtml(filterName)}" type="search" data-performance-section-filter="${escapeHtml(sectionId)}" data-performance-scenario-id="${escapeHtml(scenarioId)}" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" />
             </div>
             ${content}
         </section>`;
@@ -2608,9 +2628,13 @@
     }
 
     function renderInlineTable(headers, rows, emptyMessage) {
+        const visibleRows = rows.slice(0, maxRenderedTableRows);
+        const capNotice = rows.length > visibleRows.length
+            ? `<tr><td colspan="${headers.length}" class="muted">Showing ${formatNumber.format(visibleRows.length)} of ${formatNumber.format(rows.length)} rows. Use the filter to narrow this table.</td></tr>`
+            : "";
         return `<table>
             <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
-            <tbody>${rows.length ? rows.join("") : `<tr><td colspan="${headers.length}" class="muted">${escapeHtml(emptyMessage)}</td></tr>`}</tbody>
+            <tbody>${visibleRows.length ? `${visibleRows.join("")}${capNotice}` : `<tr><td colspan="${headers.length}" class="muted">${escapeHtml(emptyMessage)}</td></tr>`}</tbody>
         </table>`;
     }
 
@@ -6535,7 +6559,9 @@
             });
         }
         try {
+            state.appPackageLoadState = "loading";
             state.appPackage = await loadJson(`/api/app-package?v=${Date.now()}`);
+            state.appPackageLoadState = "loaded";
             if (button) {
                 setButtonProgress(button, {
                     label,
@@ -6549,6 +6575,7 @@
             byId("load-detail").textContent = `Session root: ${state.appPackage.session_root || "unknown"}`;
         } catch (error) {
             state.appPackage = null;
+            state.appPackageLoadState = "error";
             byId("load-status").textContent = "App package unavailable.";
             byId("load-detail").textContent = `Start with scripts/open-overview.ps1 to enable the local dashboard API. ${error.message}`;
         } finally {
@@ -6598,10 +6625,16 @@
                 await loadDefaults();
                 return;
             }
-            renderOverview();
-            renderRunLog();
+            const tabId = activeTabId();
+            if (tabId === "overview") {
+                renderOverview();
+            } else if (tabId === "run-log") {
+                renderRunLog();
+            }
         } catch {
-            renderRunLog();
+            if (activeTabId() === "run-log") {
+                renderRunLog();
+            }
         }
     }
 
@@ -6652,7 +6685,7 @@
     async function loadDefaults() {
         const status = byId("load-status");
         const detail = byId("load-detail");
-        const keys = ["catalog", "runs", "hotspots", "slowspots", "searchSpeed", "capacityReport", "resourceProfiles", "speedReport", "performanceReview", "clones", "typeHealth", "escapeHatches", "locality", "leverage", "map", "projectCodeMetrics", "flamegraphs", "correctness", "appPackage"];
+        const keys = ["catalog", "runs", "hotspots", "slowspots", "searchSpeed", "capacityReport", "resourceProfiles", "speedReport", "performanceReview", "clones", "typeHealth", "escapeHatches", "locality", "leverage", "map", "projectCodeMetrics", "flamegraphs", "correctness"];
         const fallbacks = {
             catalog: null,
             runs: [],
@@ -6703,7 +6736,8 @@
             status.textContent = "No artifacts loaded.";
             detail.textContent = `Default fetch failed: ${missing.join("; ")}. Start with scripts/open-overview.ps1 to regenerate artifacts.`;
         }
-        renderAll();
+        renderedTabs.clear();
+        renderActiveTab({ force: true });
     }
 
     function setupTabs() {
@@ -6724,17 +6758,64 @@
         });
     }
 
-    function activateTab(tabId) {
+    function activateTab(tabId, options = {}) {
         const button = document.querySelector(`.tab[data-tab="${CSS.escape(tabId)}"]`);
         const panel = byId(tabId);
-        if (!button || !panel) return;
-        document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("is-active"));
-        document.querySelectorAll(".tab-panel").forEach((item) => item.classList.remove("is-active"));
-        button.classList.add("is-active");
-        panel.classList.add("is-active");
+        if (!panel) return;
+        const shouldRender = !options.skipRender;
+        const renderBeforeReveal = shouldRender && !options.forceRender && !renderedTabs.has(tabId);
+        if (renderBeforeReveal) {
+            renderTab(tabId, { force: true });
+        }
+        document.querySelectorAll(".tab").forEach((tab) => {
+            const isActive = tab === button;
+            tab.classList.toggle("is-active", isActive);
+            tab.setAttribute("aria-selected", String(isActive));
+        });
+        document.querySelectorAll(".workbench-brand[data-tab-target]").forEach((link) => {
+            const isActive = link instanceof HTMLElement && link.dataset.tabTarget === tabId;
+            link.classList.toggle("is-active", isActive);
+            if (isActive) {
+                link.setAttribute("aria-current", "page");
+            } else {
+                link.removeAttribute("aria-current");
+            }
+        });
+        document.querySelectorAll(".tab-panel").forEach((item) => {
+            const isActive = item === panel;
+            item.classList.toggle("is-active", isActive);
+            item.setAttribute("aria-hidden", String(!isActive));
+        });
         document.body.dataset.activeTab = tabId;
         if (tabId === "app-package") {
-            renderAppPackage();
+            loadAppPackageOnce();
+        }
+        if (shouldRender && !renderBeforeReveal) {
+            renderTab(tabId, { force: Boolean(options.forceRender) });
+        }
+    }
+
+    async function loadAppPackageOnce() {
+        if (state.appPackageLoadState === "loading" || state.appPackageLoadState === "loaded") {
+            return;
+        }
+        state.appPackageLoadState = "loading";
+        try {
+            state.appPackage = await loadJson(sources.appPackage);
+            state.appPackageLoadState = "loaded";
+            if (byId("app-package")?.classList.contains("is-active")) {
+                byId("load-status").textContent = "Loaded app package.";
+                byId("load-detail").textContent = `Session root: ${state.appPackage.session_root || "unknown"}`;
+                renderAppPackage();
+            }
+        } catch (error) {
+            state.appPackage = null;
+            state.appPackageLoadState = "error";
+            if (byId("app-package")?.classList.contains("is-active")) {
+                byId("load-status").textContent = "App package unavailable.";
+                byId("load-detail").textContent = `Start with scripts/open-overview.ps1 to enable the local dashboard API. ${error.message}`;
+                renderAppPackage();
+            }
         }
     }
 
@@ -6742,7 +6823,7 @@
         const params = new URLSearchParams(window.location.search);
         const hash = window.location.hash.replace(/^#/, "");
         const requested = params.get("tab") || hash.split("?")[0];
-        return requested || "purpose";
+        return requested || "overview";
     }
 
     function applyQualityHashState() {
@@ -6789,6 +6870,135 @@
         if (window.location.hash !== next) {
             history.replaceState(null, "", next);
         }
+    }
+
+    function activeTabId() {
+        return document.querySelector(".tab-panel.is-active")?.id || initialTabFromLocation();
+    }
+
+    function renderActiveTab(options = {}) {
+        renderTab(activeTabId(), options);
+        renderRunButtonsProgress();
+    }
+
+    function scheduleTabRender(tabId, options = {}) {
+        if (scheduledTabRenders.has(tabId)) {
+            cancelScheduledRender(scheduledTabRenders.get(tabId));
+        }
+        const scheduled = {};
+        scheduled.timeoutId = setTimeout(() => {
+            scheduledTabRenders.delete(tabId);
+            renderTab(tabId, options);
+        }, 48);
+        scheduledTabRenders.set(tabId, scheduled);
+    }
+
+    function cancelScheduledRender(scheduled) {
+        if (!scheduled) return;
+        if (scheduled.rafId != null) {
+            cancelAnimationFrame(scheduled.rafId);
+        }
+        if (scheduled.timeoutId != null) {
+            clearTimeout(scheduled.timeoutId);
+        }
+    }
+
+    function afterPaint(callback, delay = 0) {
+        setTimeout(callback, 80 + delay);
+    }
+
+    function clearPerformancePanelPlaceholders() {
+        [
+            "performance-headline-charts",
+            "performance-measurement-gaps",
+            "performance-promise-detail",
+        ].forEach((id) => {
+            const target = byId(id);
+            if (target) {
+                target.innerHTML = "";
+            }
+        });
+        const focusList = byId("performance-focus-list");
+        if (focusList) {
+            focusList.innerHTML = "";
+        }
+    }
+
+    function markTabRendered(tabId) {
+        if (tabId === "performance-review") {
+            afterPaint(() => {
+                if (byId(tabId)?.classList.contains("is-active")) {
+                    renderedTabs.add(tabId);
+                }
+            }, 140);
+            return;
+        }
+        renderedTabs.add(tabId);
+    }
+
+    function renderTab(tabId, options = {}) {
+        if (!options.force && !byId(tabId)?.classList.contains("is-active")) {
+            return;
+        }
+        if (!options.force && renderedTabs.has(tabId)) {
+            renderRunButtonsProgress();
+            return;
+        }
+        const renderer = {
+            overview: renderOverview,
+            purpose: null,
+            "quality-review": renderQualityTab,
+            "performance-review": renderPerformanceTab,
+            "correctness-review": renderCorrectnessTab,
+            map: renderMap,
+            "app-package": renderAppPackage,
+            "run-log": renderRunLog,
+        }[tabId];
+        renderer?.();
+        markTabRendered(tabId);
+        renderRunButtonsProgress();
+    }
+
+    function renderQualityTab() {
+        renderQualityOverview();
+        renderTypeHealthScatter();
+        renderQualityDistribution();
+        renderTypeHealthDistribution();
+        renderEscapeHatchDistribution();
+        renderCloneDistribution();
+        renderLocalityLeverage();
+        renderQualityDataset(state.qualityDatasetView);
+        renderQualityDatasetView();
+    }
+
+    function renderPerformanceTab() {
+        const payload = state.performanceReview || {};
+        const scenarios = payload.scenarios || [];
+        const epoch = ++state.performanceRenderEpoch;
+        renderPerformanceOverview();
+        renderPerformanceFilterOptions();
+        renderPerformanceStaleState(payload);
+        renderPerformancePromiseBoard(scenarios);
+        clearPerformancePanelPlaceholders();
+        deferPerformanceRender(epoch, () => renderPerformanceHeadlineCharts(), 0);
+        deferPerformanceRender(epoch, () => renderPerformanceCuratedLists(), 24);
+        deferPerformanceRender(epoch, () => renderPerformanceMeasurementGaps(), 48);
+        deferPerformanceRender(epoch, () => renderPerformanceDatasetView(), 72);
+    }
+
+    function deferPerformanceRender(epoch, render, delay) {
+        afterPaint(() => {
+            if (state.performanceRenderEpoch !== epoch || !byId("performance-review")?.classList.contains("is-active")) {
+                return;
+            }
+            render();
+            renderRunButtonsProgress();
+        }, delay);
+    }
+
+    function renderCorrectnessTab() {
+        renderCorrectness();
+        renderCorrectnessMatrix();
     }
 
     function renderAll() {
@@ -6851,16 +7061,31 @@
         `;
 
         renderAppPackageInsights(payload);
-        renderAppPackageBuffers(payload.buffers || []);
-        renderAppPackageTopology(payload.topology || []);
-        renderAppPackageDiagnostics(payload.diagnostics || []);
-        renderAppPackageFiles(payload);
-        renderAppPackageManifest(payload.manifest);
+        updateAppPackageCount("app-package-diagnostics-count", payload.diagnostics?.length || 0, payload.diagnostics?.length || 0, "events");
+        updateAppPackageCount("app-package-buffers-count", payload.buffers?.length || 0, payload.buffers?.length || 0, "buffers");
+        updateAppPackageCount("app-package-topology-count", payload.topology?.length || 0, payload.topology?.length || 0, "tabs");
+        updateAppPackageCount("app-package-files-count", appPackageFiles(payload).length, appPackageFiles(payload).length, "files");
+        renderAppPackageActiveData(payload);
         renderAppPackageDataView();
         const warnings = payload.warnings || [];
         byId("app-package-warnings").innerHTML = warnings.length
             ? `<ul class="warning-list">${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
             : `<p class="muted">No loader warnings.</p>`;
+    }
+
+    function renderAppPackageActiveData(payload = state.appPackage) {
+        if (!payload) return;
+        if (state.appPackageView === "buffers") {
+            renderAppPackageBuffers(payload.buffers || []);
+        } else if (state.appPackageView === "topology") {
+            renderAppPackageTopology(payload.topology || []);
+        } else if (state.appPackageView === "files") {
+            renderAppPackageFiles(payload);
+        } else if (state.appPackageView === "manifest") {
+            renderAppPackageManifest(payload.manifest);
+        } else {
+            renderAppPackageDiagnostics(payload.diagnostics || []);
+        }
     }
 
     function renderAppPackageConfidence(payload) {
@@ -7152,11 +7377,7 @@
     }
 
     function renderAppPackageFiles(payload) {
-        const files = [
-            { kind: "manifest", ...(payload.manifest_file || {}) },
-            { kind: "error log", ...(payload.error_log_file || {}) },
-            ...(payload.buffer_files || []).map((file) => ({ kind: "snapshot", ...file })),
-        ];
+        const files = appPackageFiles(payload);
         updateAppPackageCount("app-package-files-count", files.length, files.length, "files");
         renderTable(
             "app-package-files",
@@ -7172,17 +7393,29 @@
         );
     }
 
+    function appPackageFiles(payload) {
+        return [
+            { kind: "manifest", ...(payload.manifest_file || {}) },
+            { kind: "error log", ...(payload.error_log_file || {}) },
+            ...(payload.buffer_files || []).map((file) => ({ kind: "snapshot", ...file })),
+        ];
+    }
+
     function renderAppPackageManifest(manifest) {
         const target = byId("app-package-manifest");
         if (!target) return;
         target.textContent = manifest ? JSON.stringify(manifest, null, 2) : "No manifest loaded.";
     }
 
-    function renderQualityDistribution() {
-        const target = byId("quality-distribution");
+    function renderConfiguredRiskDistribution(targetId, items, options) {
+        const target = byId(targetId);
         if (!target) return;
+        renderRiskDistribution(target, items, options);
+    }
+
+    function renderQualityDistribution() {
         const thresholds = empiricalThresholds(qualityDistributionItems().map((item) => item.score), 300, 600);
-        renderRiskDistribution(target, qualityDistributionItems(), {
+        renderConfiguredRiskDistribution("quality-distribution", qualityDistributionItems(), {
             empty: "No hotspot data.",
             modeKey: "qualityDistributionMode",
             expandedKey: "expandedQualityKey",
@@ -7195,9 +7428,7 @@
     }
 
     function renderCloneDistribution() {
-        const target = byId("clone-distribution");
-        if (!target) return;
-        renderRiskDistribution(target, cloneDistributionItems(), {
+        renderConfiguredRiskDistribution("clone-distribution", cloneDistributionItems(), {
             empty: "No clone data.",
             modeKey: "cloneDistributionMode",
             expandedKey: "expandedCloneKey",
@@ -7210,9 +7441,7 @@
     }
 
     function renderTypeHealthDistribution() {
-        const target = byId("type-health-distribution");
-        if (!target) return;
-        renderRiskDistribution(target, typeHealthDistributionItems(), {
+        renderConfiguredRiskDistribution("type-health-distribution", typeHealthDistributionItems(), {
             empty: "No type health data.",
             modeKey: "typeHealthDistributionMode",
             expandedKey: "expandedTypeHealthKey",
@@ -7227,9 +7456,7 @@
     }
 
     function renderEscapeHatchDistribution() {
-        const target = byId("escape-hatches-distribution");
-        if (!target) return;
-        renderRiskDistribution(target, escapeHatchDistributionItems(), {
+        renderConfiguredRiskDistribution("escape-hatches-distribution", escapeHatchDistributionItems(), {
             empty: "No escape hatch data.",
             modeKey: "escapeHatchDistributionMode",
             expandedKey: "expandedEscapeHatchKey",
@@ -7241,8 +7468,21 @@
         });
     }
 
+    function distributionItem({ key, kind, name, score, signals = [], details, raw, searchParts }) {
+        return {
+            key,
+            kind,
+            name,
+            score,
+            signals,
+            details,
+            raw,
+            searchText: searchParts.join(" "),
+        };
+    }
+
     function qualityDistributionItems() {
-        return (state.hotspots || []).map((h) => ({
+        return (state.hotspots || []).map((h) => distributionItem({
             key: `hotspot:${h.name}:${h.start_line || ""}`,
             kind: "hotspot",
             name: h.name,
@@ -7250,7 +7490,7 @@
             signals: h.signals || [],
             details: `${formatNumber.format(h.sloc || 0)} SLOC`,
             raw: h,
-            searchText: [h.kind, h.name, h.signals, h.sloc, qualityScore(h)].join(" "),
+            searchParts: [h.kind, h.name, h.signals, h.sloc, qualityScore(h)],
         }));
     }
 
@@ -7258,7 +7498,7 @@
         return (state.clones || []).map((c) => {
             const hash = c.hash || c.group_hash || "";
             const instances = c.instances || [];
-            return {
+            return distributionItem({
                 key: `clone:${c.hash || c.group_hash || c.name || ""}`,
                 kind: "clone",
                 name: `clone ${hash.substring(0, 8) || "group"} (${c.instance_count || instances.length || 0}x)`,
@@ -7266,13 +7506,13 @@
                 signals: c.signals || [],
                 details: `${c.token_count || 0} tokens`,
                 raw: c,
-                searchText: [c.engine, hash, c.score, c.token_count, c.signals, ...instances.map((inst) => inst.file_path)].join(" "),
-            };
+                searchParts: [c.engine, hash, c.score, c.token_count, c.signals, ...instances.map((inst) => inst.file_path)],
+            });
         });
     }
 
     function typeHealthDistributionItems() {
-        return (state.typeHealth || []).map((item) => ({
+        return (state.typeHealth || []).map((item) => distributionItem({
             key: `type:${item.qualified_name || item.type_name}`,
             kind: item.kind || "type",
             name: item.qualified_name || item.type_name,
@@ -7280,7 +7520,7 @@
             signals: item.signals || [],
             details: `${formatNumber.format(item.field_count || item.variant_count || 0)} width · ${formatNumber.format(item.method_count || 0)} methods · ${formatNumber.format(item.impl_file_count || 0)} files`,
             raw: item,
-            searchText: [
+            searchParts: [
                 item.kind,
                 item.type_name,
                 item.qualified_name,
@@ -7291,12 +7531,12 @@
                 item.variant_count,
                 item.method_count,
                 item.impl_file_count,
-            ].join(" "),
+            ],
         }));
     }
 
     function escapeHatchDistributionItems() {
-        return (state.escapeHatches || []).map((item) => ({
+        return (state.escapeHatches || []).map((item) => distributionItem({
             key: `escape:${item.module_key || item.module_name}`,
             kind: "escape hatch",
             name: item.module_key || item.module_name,
@@ -7304,7 +7544,7 @@
             signals: item.signals || [],
             details: `${formatNumber.format(item.total_count || 0)} uses · unsafe ${formatNumber.format(item.unsafe_count || 0)}`,
             raw: item,
-            searchText: [item.module_key, item.module_name, item.path, item.signals, item.escape_hatch_score].join(" "),
+            searchParts: [item.module_key, item.module_name, item.path, item.signals, item.escape_hatch_score],
         }));
     }
 
@@ -7880,11 +8120,15 @@
     }
 
     function renderQualityDataset(dataset) {
-        if (dataset === "hotspots") renderHotspots();
-        else if (dataset === "clones") renderClones();
-        else if (dataset === "typeHealth") renderTypeHealth();
-        else if (dataset === "escapeHatches") renderEscapeHatches();
-        else if (dataset === "locality" || dataset === "leverage") renderLocalityLeverage();
+        const render = {
+            hotspots: renderHotspots,
+            clones: renderClones,
+            typeHealth: renderTypeHealth,
+            escapeHatches: renderEscapeHatches,
+            locality: renderLocalityLeverage,
+            leverage: renderLocalityLeverage,
+        }[dataset];
+        render?.();
     }
 
     function drillToQualityDataset(dataset, filter = "") {
@@ -8029,6 +8273,21 @@
         });
     }
 
+    function bindScheduledInput(id, render) {
+        const input = byId(id);
+        if (!input) return;
+        let frameId = 0;
+        input.addEventListener("input", (event) => {
+            if (frameId) {
+                cancelAnimationFrame(frameId);
+            }
+            frameId = requestAnimationFrame(() => {
+                frameId = 0;
+                render(event);
+            });
+        });
+    }
+
     function bindRunButtons() {
         onElements("[data-run]", "click", (button) => triggerRun("/api/run/all", button));
         onElements("[data-run-category]", "click", (button) => {
@@ -8041,13 +8300,13 @@
 
     byId("viewer-version").textContent = viewerVersion;
     setupTabs();
-    byId("hotspots-filter")?.addEventListener("input", () => { renderHotspots(); updateQualityHash(); });
-    byId("clones-filter")?.addEventListener("input", () => { renderClones(); updateQualityHash(); });
-    byId("type-health-filter")?.addEventListener("input", () => { renderTypeHealth(); updateQualityHash(); });
-    byId("escape-hatches-filter")?.addEventListener("input", () => { renderEscapeHatches(); updateQualityHash(); });
-    byId("correctness-filter")?.addEventListener("input", renderCorrectness);
-    byId("locality-filter")?.addEventListener("input", () => { renderLocalityLeverage(); updateQualityHash(); });
-    byId("leverage-filter")?.addEventListener("input", () => { renderLocalityLeverage(); updateQualityHash(); });
+    bindScheduledInput("hotspots-filter", () => { renderHotspots(); updateQualityHash(); });
+    bindScheduledInput("clones-filter", () => { renderClones(); updateQualityHash(); });
+    bindScheduledInput("type-health-filter", () => { renderTypeHealth(); updateQualityHash(); });
+    bindScheduledInput("escape-hatches-filter", () => { renderEscapeHatches(); updateQualityHash(); });
+    bindScheduledInput("correctness-filter", renderCorrectness);
+    bindScheduledInput("locality-filter", () => { renderLocalityLeverage(); updateQualityHash(); });
+    bindScheduledInput("leverage-filter", () => { renderLocalityLeverage(); updateQualityHash(); });
     byId("correctness-show-all")?.addEventListener("change", renderCorrectness);
     bindModeGroup("[data-quality-distribution-mode]", "qualityDistributionMode", "counts", (value) => {
         state.qualityDistributionMode = value;
@@ -8057,6 +8316,7 @@
     }, renderCloneDistribution);
     onElements("[data-quality-dataset-view]", "click", (button) => {
         state.qualityDatasetView = button.dataset.qualityDatasetView || "hotspots";
+        renderQualityDataset(state.qualityDatasetView);
         renderQualityDatasetView();
     });
     onElements("[data-clear-quality-filter]", "click", (button) => {
@@ -8075,7 +8335,7 @@
         state.typeHealthScatterY = value;
     }, renderTypeHealthScatter);
     renderQualityDatasetView();
-    byId("performance-dataset-search")?.addEventListener("input", (event) => {
+    bindScheduledInput("performance-dataset-search", (event) => {
         state.performanceDatasetSearch = event.target.value || "";
         rerenderPerformanceEvidence();
     });
@@ -8129,11 +8389,12 @@
     byId("app-package-clear-buffers")?.addEventListener("click", clearAppPackageBuffers);
     onElements("[data-app-package-view]", "click", (button) => {
         state.appPackageView = button.dataset.appPackageView || "diagnostics";
+        renderAppPackageActiveData();
         renderAppPackageDataView();
     });
-    byId("app-package-buffer-filter")?.addEventListener("input", renderAppPackage);
-    byId("app-package-diagnostics-filter")?.addEventListener("input", renderAppPackage);
-    byId("map-filter").addEventListener("input", renderMap);
+    bindScheduledInput("app-package-buffer-filter", () => renderAppPackageBuffers(state.appPackage?.buffers || []));
+    bindScheduledInput("app-package-diagnostics-filter", () => renderAppPackageDiagnostics(state.appPackage?.diagnostics || []));
+    bindScheduledInput("map-filter", renderMap);
     byId("map-layout").addEventListener("change", (event) => {
         state.mapLayout = event.target.value;
         renderMap();
@@ -8146,7 +8407,7 @@
         state.focusMode = event.target.checked;
         renderMap();
     });
-    byId("map-zoom").addEventListener("input", (event) => {
+    bindScheduledInput("map-zoom", (event) => {
         state.mapZoom = Number(event.target.value);
         byId("map-zoom-value").textContent = `${Math.round(state.mapZoom * 100)}%`;
         renderMap();
@@ -8161,8 +8422,9 @@
     bindRunButtons();
     window.setInterval(refreshRuns, 5000);
     applyQualityHashState();
+    const initialTab = initialTabFromLocation();
+    activateTab(initialTab, { skipRender: true });
     loadDefaults().then(() => {
-        activateTab(initialTabFromLocation());
         renderQualityDatasetView();
     });
 })();

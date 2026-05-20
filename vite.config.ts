@@ -124,14 +124,6 @@ function projectBoardPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? "/", "http://localhost");
         try {
-          if (req.method === "GET" && url.pathname === "/viewer") {
-            res.writeHead(302, { Location: "/viewer/" });
-            res.end();
-            return;
-          }
-          if (req.method === "GET" && url.pathname === "/viewer/") {
-            return sendFile(res, join(repoRoot, "public", "viewer", "index.html"));
-          }
           if (req.method === "GET" && url.pathname === "/viewer/data-viewer.js") {
             return sendViewerController(res);
           }
