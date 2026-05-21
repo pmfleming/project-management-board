@@ -10,6 +10,7 @@
         searchSpeed: `../target/analysis/search_speed.json?v=${viewerVersion}`,
         capacityReport: `../target/analysis/capacity_report.json?v=${viewerVersion}`,
         resourceProfiles: `../target/analysis/resource_profiles.json?v=${viewerVersion}`,
+        frameMetrics: `../target/analysis/frame_metrics.json?v=${viewerVersion}`,
         speedReport: `../target/analysis/speed_efficiency_report.json?v=${viewerVersion}`,
         performanceReview: `../target/analysis/performance_review.json?v=${viewerVersion}`,
         clones: `../target/analysis/clones.json?v=${viewerVersion}`,
@@ -21,7 +22,8 @@
         projectCodeMetrics: `../target/analysis/project_code_metrics.json?v=${viewerVersion}`,
         flamegraphs: `../target/analysis/flamegraphs.json?v=${viewerVersion}`,
         correctness: `../target/analysis/correctness_review.json?v=${viewerVersion}`,
-        appPackage: isStaticHost
+        appPackage: `../target/analysis/app_package.json?v=${viewerVersion}`,
+        appPackageLive: isStaticHost
             ? `../target/analysis/app_package.json?v=${viewerVersion}`
             : `/api/app-package?v=${viewerVersion}`,
     };
@@ -34,6 +36,7 @@
         searchSpeed: [],
         capacityReport: null,
         resourceProfiles: null,
+        frameMetrics: null,
         speedReport: null,
         performanceReview: null,
         clones: [],
@@ -50,6 +53,7 @@
         selectedFlamegraph: null,
         selectedRun: null,
         selectedRunLogText: "",
+        runLogCache: new Map(),
         selectedLayer: null,
         selectedCorrectnessCategory: null,
         selectedPerformanceScenarioId: null,
@@ -88,6 +92,7 @@
         searchChartScope: 'tabs',
         appPackageView: 'diagnostics',
         appPackageLoadState: 'idle',
+        appPackageLiveLoaded: false,
     };
 
     const renderedTabs = new Set();
@@ -99,6 +104,31 @@
     const formatNumber = new Intl.NumberFormat(undefined, {
         maximumFractionDigits: 2,
     });
+
+    function dateKey(value) {
+        const text = String(value || "");
+        const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (match) {
+            return `${match[1]}-${match[2]}-${match[3]}`;
+        }
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) {
+            return "";
+        }
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+    }
+
+    function formatDate(value) {
+        const key = dateKey(value);
+        if (!key) {
+            return "-";
+        }
+        const [year, month, day] = key.split("-");
+        return `${day}/${month}/${year}`;
+    }
 
     const searchModeColors = {
         active: "#6fd0ff",
@@ -222,11 +252,21 @@
         return "";
     }
 
+    function setTextContentIfChanged(element, text) {
+        if (element && element.textContent !== text) {
+            element.textContent = text;
+        }
+    }
+
     function activeRunForSelector(selector) {
         if (!selector) return null;
         return [...state.runs].reverse().find((run) => {
             return run.selector === selector && activeRunStatuses.has(run.status);
         }) || null;
+    }
+
+    function latestFinishedRunId(runs = state.runs) {
+        return [...(runs || [])].reverse().find((item) => item.finished_at)?.id || null;
     }
 
     function renderRunButtonProgress(button, run) {
@@ -333,11 +373,12 @@
         </svg>`;
     }
 
-    function confidenceMetric({ label, value, detail = "", tone = "ok", series = null }) {
+    function confidenceMetric({ label, value, detail = "", support = "", tone = "ok", series = null }) {
         return `<div class="confidence-metric confidence-metric--${escapeHtml(tone)}">
             <span>${escapeHtml(label)}</span>
             <strong>${escapeHtml(value)}</strong>
             ${detail ? `<em>${escapeHtml(detail)}</em>` : ""}
+            ${support ? `<small>${escapeHtml(support)}</small>` : ""}
             ${confidenceSparkline(series, tone)}
         </div>`;
     }
@@ -1077,12 +1118,12 @@
                     bounds: { min: 0, max: 2, scale: "linear" },
                     markers: [
                         { value: 0.7, kind: "warn", label: "watch" },
-                        { value: 1, kind: "bad", label: "over" },
+                        { value: 1, kind: "bad", label: "response miss" },
                     ],
                     buckets: [
                         { cls: "good", label: "< 0.7 healthy", test: (item) => item.value < 0.7 },
-                        { cls: "warn", label: "0.7-1.0 watch", test: (item) => item.value >= 0.7 && item.value < 1 },
-                        { cls: "bad", label: ">= 1.0 over", test: (item) => item.value >= 1 },
+                        { cls: "warn", label: "watch / throughput", test: (item) => item.tone === "watch" },
+                        { cls: "bad", label: "response miss", test: (item) => item.tone === "bad" },
                     ],
                     driverFor: (item) => item.resource || "cpu",
                     valueLabel: formatRatio,
@@ -1295,6 +1336,7 @@
     function promiseOverviewRow(scenario) {
         const status = scenarioStatus(scenario);
         const scale = bestScaleCheck(scenario);
+        const budgetSplit = scenarioBudgetSplit(scenario);
         const observed = scale ? Number(scale.observed || 0) : 0;
         const target = scale ? Number(scale.target || 0) : 0;
         const scaleRatio = target > 0 ? observed / target : 0;
@@ -1305,7 +1347,8 @@
             status,
             scale,
             scaleRatio,
-            budgetMisses: Number(scenario.budget_misses || 0),
+            budgetMisses: budgetSplit.strictMisses + budgetSplit.unknownMisses,
+            throughputMisses: budgetSplit.throughputMisses,
             ceilingHits: Number(scenario.ceilings_reached || 0),
             maxLatencyMs: Number(scenario.max_latency_ms || 0),
             peakWorkingSet: Number(scenario.peak_working_set_bytes || 0),
@@ -1395,7 +1438,7 @@
         const scaleGap = row.scale && row.scale.met === false ? 250 : 0;
         const latencyWeight = row.maxLatencyMs ? Math.min(180, row.maxLatencyMs / 4) : 0;
         const memoryWeight = row.peakWorkingSet ? Math.min(120, row.peakWorkingSet / 32_000_000) : 0;
-        return statusWeight + scaleGap + row.budgetMisses * 40 + row.ceilingHits * 45 + latencyWeight + memoryWeight;
+        return statusWeight + scaleGap + row.budgetMisses * 40 + (row.throughputMisses || 0) * 18 + row.ceilingHits * 45 + latencyWeight + memoryWeight;
     }
 
     function budgetLabelParts(item) {
@@ -1425,17 +1468,17 @@
         const rowsMarkup = rowsToRender.map(({ item, ratio }) => {
             const parts = budgetLabelParts(item);
             const pct = Math.min(100, (ratio / maxRatio) * 100);
-            const cls = ratio > 1 ? "bad" : ratio > 0.85 ? "watch" : "ok";
+            const cls = budgetPressureTone(item, ratio);
             return `<div class="headroom-row">
                 <span><strong>${escapeHtml(parts.title)}</strong><em>${escapeHtml(parts.subtitle)}</em></span>
                 <div><i class="headroom-row__fill headroom-row__fill--${cls}" style="width:${pct}%"></i><b style="left:${(1 / maxRatio) * 100}%"></b></div>
                 <strong>${formatRatio(ratio)}</strong>
             </div>`;
         }).join("");
-        const over = ratios.filter((entry) => entry.ratio > 1).length;
-        const watch = ratios.filter((entry) => entry.ratio >= 0.85 && entry.ratio <= 1).length;
+        const urgent = ratios.filter((entry) => budgetPressureTone(entry.item, entry.ratio) === "bad").length;
+        const watch = ratios.filter((entry) => budgetPressureTone(entry.item, entry.ratio) === "watch").length;
         return `<section class="panel-card chart-panel" id="budget-pressure">
-            <div><h3>Budget Pressure</h3><p class="chart-caption">${formatNumber.format(over)} over budget · ${formatNumber.format(watch)} near budget · full rows stay in the dataset tables.</p></div>
+            <div><h3>Budget Pressure</h3><p class="chart-caption">${formatNumber.format(urgent)} responsiveness misses · ${formatNumber.format(watch)} throughput/watch rows · full rows stay in the dataset tables.</p></div>
             <figure class="chart-frame chart-frame--list" aria-label="Budget pressure">${rowsMarkup}</figure>
         </section>`;
     }
@@ -1525,6 +1568,7 @@
                         xLabel: item.parameter_label || String(item.parameter_value ?? "-"),
                         meanMs: item.mean_ns / 1_000_000,
                         thresholdMs: item.threshold_ms,
+                        tone: budgetPressureTone(item, item.threshold_ms ? (item.mean_ns / 1_000_000) / item.threshold_ms : 0),
                         throughput: item.throughput_mb_s || 0,
                     })),
                 };
@@ -1605,8 +1649,10 @@
                 const x = xLookup.get(point.xValue);
                 const y = yPosition(point.meanMs);
                 const overBudget = point.meanMs > point.thresholdMs;
+                const markerTone = overBudget ? point.tone : "ok";
+                const markerColor = markerTone === "bad" ? "#ff7474" : markerTone === "watch" ? "#f0c35e" : entry.color;
                 return `<g>
-                    <circle class="chart-point" cx="${x}" cy="${y}" r="5" stroke="${overBudget ? "#ff7474" : entry.color}" fill="#10151c"></circle>
+                    <circle class="chart-point" cx="${x}" cy="${y}" r="5" stroke="${markerColor}" fill="#10151c"></circle>
                     ${overBudget ? `<circle class="chart-point--over" cx="${x}" cy="${y}" r="9"></circle>` : ""}
                 </g>`;
             }).join("");
@@ -1734,7 +1780,7 @@
             const overBudget = completion.points.find((point) => point.meanMs > point.thresholdMs);
             insights.push(
                 overBudget
-                    ? `Completion crosses its budget at ${overBudget.xLabel}.`
+                    ? `Completion throughput watch starts at ${overBudget.xLabel}.`
                     : `Completion stays within budget through ${completion.points[completion.points.length - 1].xLabel}.`
             );
         }
@@ -1772,7 +1818,7 @@
             .filter(Boolean);
         insights.push(
             completionBreaks.length
-                ? `Completion budget breaks start at ${completionBreaks.join("; ")}.`
+                ? `Completion throughput watches start at ${completionBreaks.join("; ")}.`
                 : "Completion stays within budget across all measured file-size series."
         );
 
@@ -1902,6 +1948,7 @@
         }
         const groups = new Map();
         triage.forEach((item) => {
+            const throughputWatch = isAggregateCompletionRow(item) && /over budget|slow\s*>/i.test(item.reason || "");
             const key = [
                 item.scenario_label || item.scenario_id || "Unknown scenario",
                 item.family || "unmapped",
@@ -1915,20 +1962,26 @@
                 action: item.recommended_action || "",
                 count: 0,
                 rankScore: 0,
+                tone: throughputWatch ? "watch" : "bad",
                 reasons: new Set(),
             };
             group.count += 1;
-            group.rankScore = Math.max(group.rankScore, Number(item.rank_score || 0));
+            group.rankScore = Math.max(group.rankScore, Number(item.rank_score || 0) * (throughputWatch ? 0.55 : 1));
+            if (!throughputWatch) group.tone = "bad";
+            if (throughputWatch && group.tone !== "bad") group.tone = "watch";
             pillValues(item.reason).forEach((reason) => group.reasons.add(reason));
             groups.set(key, group);
         });
         const cards = [...groups.values()]
-            .sort((a, b) => b.rankScore - a.rankScore)
+            .sort((a, b) => statusRank(a.tone) - statusRank(b.tone) || b.rankScore - a.rankScore)
             .slice(0, 5);
         const maxScore = cards[0]?.rankScore || 1;
-        const total = (triageSummary.critical || 0) + (triageSummary.watch || 0) + (triageSummary.ok || 0);
-        const criticalPct = total ? ((triageSummary.critical || 0) / total) * 100 : 0;
-        const watchPct = total ? ((triageSummary.watch || 0) / total) * 100 : 0;
+        const throughputWatchCount = triage.filter((item) => isAggregateCompletionRow(item) && /over budget|slow\s*>/i.test(item.reason || "")).length;
+        const criticalCount = Math.max(0, (triageSummary.critical || 0) - throughputWatchCount);
+        const watchCount = (triageSummary.watch || 0) + throughputWatchCount;
+        const total = criticalCount + watchCount + (triageSummary.ok || 0);
+        const criticalPct = total ? (criticalCount / total) * 100 : 0;
+        const watchPct = total ? (watchCount / total) * 100 : 0;
         const okPct = Math.max(0, 100 - criticalPct - watchPct);
         return `<div class="triage-snapshot">
             <div class="triage-severity" aria-label="Triage severity distribution">
@@ -1938,8 +1991,8 @@
                     <span class="triage-severity__ok" style="width:${okPct}%"></span>
                 </div>
                 <div class="triage-severity__legend">
-                    <span><strong>${formatNumber.format(triageSummary.critical || 0)}</strong> critical</span>
-                    <span><strong>${formatNumber.format(triageSummary.watch || 0)}</strong> watch</span>
+                    <span><strong>${formatNumber.format(criticalCount)}</strong> response</span>
+                    <span><strong>${formatNumber.format(watchCount)}</strong> watch</span>
                     <span><strong>${formatNumber.format(triageSummary.ok || 0)}</strong> ok</span>
                 </div>
             </div>
@@ -2051,9 +2104,13 @@
     }
 
     function performancePromisePillMetric(scenario, status) {
-        const missCount = Number(scenario.budget_misses || 0);
-        if (missCount) {
-            return { value: formatNumber.format(missCount), label: "over budget" };
+        const budgetSplit = scenarioBudgetSplit(scenario);
+        const responseMisses = budgetSplit.strictMisses + budgetSplit.unknownMisses;
+        if (responseMisses) {
+            return { value: formatNumber.format(responseMisses), label: responseMisses === 1 ? "response miss" : "response misses" };
+        }
+        if (budgetSplit.throughputMisses) {
+            return { value: formatNumber.format(budgetSplit.throughputMisses), label: "throughput watch" };
         }
         const ceilingCount = Number(scenario.ceilings_reached || 0);
         if (ceilingCount) {
@@ -2071,15 +2128,17 @@
         const scale = bestScaleCheck(scenario);
         const observed = scale ? formatScaleValue(scale.observed, scale.unit) : "-";
         const targetValue = scale ? formatScaleValue(scale.target, scale.unit) : "-";
-        const missCount = Number(scenario.budget_misses || 0);
+        const budgetSplit = scenarioBudgetSplit(scenario);
+        const responseMisses = budgetSplit.strictMisses + budgetSplit.unknownMisses;
         const ceilingCount = Number(scenario.ceilings_reached || 0);
         const progress = [
             ["Status", status.label, status.cls],
             ["Observed", observed, scale?.met === false ? "bad" : "ok"],
             ["Target", targetValue, "neutral"],
-            ["Budget misses", formatNumber.format(missCount), missCount ? "bad" : "ok"],
+            ["Response misses", formatNumber.format(responseMisses), responseMisses ? "bad" : "ok"],
+            ["Throughput watch", formatNumber.format(budgetSplit.throughputMisses), budgetSplit.throughputMisses ? "watch" : "ok"],
             ["Ceilings hit", formatNumber.format(ceilingCount), ceilingCount ? "watch" : "ok"],
-            ["Worst latency", scenario.max_latency_ms ? formatMs(scenario.max_latency_ms) : "-", missCount ? "watch" : "neutral"],
+            ["Worst latency", scenario.max_latency_ms ? formatMs(scenario.max_latency_ms) : "-", responseMisses ? "watch" : "neutral"],
             ["Peak working set", scenario.peak_working_set_bytes ? formatBytes(scenario.peak_working_set_bytes) : "-", "neutral"],
         ];
         return `<div class="promise-tab-progress">
@@ -2143,10 +2202,12 @@
     }
 
     function formatScenarioPressure(scenario) {
-        const missCount = Number(scenario.budget_misses || 0);
+        const budgetSplit = scenarioBudgetSplit(scenario);
+        const responseMisses = budgetSplit.strictMisses + budgetSplit.unknownMisses;
         const ceilingCount = Number(scenario.ceilings_reached || 0);
         return [
-            missCount ? `${formatNumber.format(missCount)} over budget` : "0 over budget",
+            responseMisses ? `${formatNumber.format(responseMisses)} response misses` : "0 response misses",
+            budgetSplit.throughputMisses ? `${formatNumber.format(budgetSplit.throughputMisses)} throughput watch` : "0 throughput watch",
             ceilingCount ? `${formatNumber.format(ceilingCount)} ceilings` : "0 ceilings",
         ].join(" - ");
     }
@@ -2211,22 +2272,24 @@
     }
 
     function renderScenarioLatencyEvidence(rows, options = {}) {
-        const over = rows.filter((item) => item.over_budget).length;
+        const strictOver = rows.filter((item) => evidenceBudgetTone(item) === "bad").length;
+        const throughputWatch = rows.filter((item) => evidenceBudgetTone(item) === "watch" && isEvidenceOverBudget(item)).length;
         const body = rows.map((item) => {
             const ratio = item.budget_ms ? Number(item.mean_ms || 0) / Number(item.budget_ms || 1) : 0;
+            const tone = evidenceBudgetTone(item, ratio);
             return `<tr>
                 <td><code>${escapeHtml(item.label || item.id || "-")}</code></td>
                 <td><span class="pill">${escapeHtml(item.family || "unmapped")}</span></td>
-                <td class="${item.over_budget ? "risk-bad" : "risk-good"}">${formatMs(item.mean_ms)}</td>
+                <td class="${tone === "bad" ? "risk-bad" : tone === "watch" ? "risk-warn" : "risk-good"}">${formatMs(item.mean_ms)}</td>
                 <td>${formatMs(item.budget_ms)}</td>
-                <td><span class="status-pill status-pill--${item.over_budget ? "bad" : ratio >= 0.85 ? "watch" : "ok"}">${escapeHtml(ratio ? formatRatio(ratio) : "-")}</span></td>
+                <td><span class="status-pill status-pill--${tone}">${escapeHtml(ratio ? formatRatio(ratio) : "-")}</span></td>
                 <td>${renderPills(item.signals || [])}</td>
                 <td>${renderScenarioProfileLinks(item.matching_flamegraphs || [])}</td>
             </tr>`;
         });
         return renderScenarioEvidenceTable({
             title: "Targeted Latency Paths",
-            caption: `${formatNumber.format(rows.length)} change-validation rows - ${formatNumber.format(over)} over budget`,
+            caption: `${formatNumber.format(rows.length)} change-validation rows - ${formatNumber.format(strictOver)} response misses - ${formatNumber.format(throughputWatch)} throughput watch`,
             open: true,
             headers: ["Test", "Family", "Mean", "Budget", "Ratio", "Signals", "Profiles"],
             rows: body,
@@ -2300,7 +2363,8 @@
                 const x = xPosition(point.x);
                 const y = yPosition(point.meanMs);
                 const over = point.budgetMs && point.meanMs > point.budgetMs;
-                return `<circle class="scenario-latency-point ${over ? "is-over" : ""}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" stroke="${color}"><title>${escapeHtml(entry.label)} ${escapeHtml(formatStressLabel(point.x))}: ${escapeHtml(formatMs(point.meanMs))}</title></circle>`;
+                const toneClass = over ? (point.tone === "watch" ? "is-watch" : "is-over") : "";
+                return `<circle class="scenario-latency-point ${toneClass}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" stroke="${color}"><title>${escapeHtml(entry.label)} ${escapeHtml(formatStressLabel(point.x))}: ${escapeHtml(formatMs(point.meanMs))}</title></circle>`;
             }).join("");
             return `<g>
                 <path class="scenario-latency-line" d="${path}" stroke="${color}"></path>
@@ -2348,6 +2412,7 @@
                 x: point.x,
                 meanMs: Number(row.mean_ms || 0),
                 budgetMs: Number(row.budget_ms || 0),
+                tone: evidenceBudgetTone(row),
             });
         });
         return [...groups.entries()]
@@ -2560,22 +2625,26 @@
     }
 
     function renderScenarioResourceEvidence(rows, options = {}) {
-        const worstElapsed = maxMetric(rows, "max_elapsed_ms");
-        const body = rows.map((item) => `<tr>
-            <td><code>${escapeHtml(item.label || item.id || "-")}</code></td>
-            <td><span class="pill">${escapeHtml(item.focus || "resource")}</span></td>
-            <td>${formatNumber.format(item.sample_count || 0)}</td>
-            <td>${formatMs(item.max_elapsed_ms)}</td>
-            <td>${escapeHtml(formatBytes(item.max_peak_live_bytes))}</td>
-            <td>${escapeHtml(formatBytes(item.max_working_set_bytes))}</td>
-            <td>${item.page_fault_growth == null ? "-" : formatNumber.format(item.page_fault_growth)}</td>
-            <td>${item.handle_growth == null ? "-" : formatNumber.format(item.handle_growth)}</td>
-        </tr>`);
+        const body = rows.map((item) => {
+            const targetMetric = resourceTargetMetric(maxBy(item.samples || [], (sample) => Number(sample.workload_value || 0)));
+            return `<tr>
+                <td><code>${escapeHtml(item.label || item.id || "-")}</code></td>
+                <td><span class="pill">${escapeHtml(item.focus || "resource")}</span></td>
+                <td>${formatNumber.format(item.sample_count || 0)}</td>
+                <td>${targetMetric ? escapeHtml(targetMetric.value) : '<span class="muted">-</span>'}</td>
+                <td>${formatMs(item.max_elapsed_ms)}</td>
+                <td>${escapeHtml(formatBytes(item.max_allocated_bytes))}</td>
+                <td>${escapeHtml(formatBytes(item.max_peak_live_bytes))}</td>
+                <td>${escapeHtml(formatBytes(item.max_working_set_bytes))}</td>
+                <td>${item.page_fault_growth == null ? "-" : formatNumber.format(item.page_fault_growth)}</td>
+                <td>${item.handle_growth == null ? "-" : formatNumber.format(item.handle_growth)}</td>
+            </tr>`;
+        });
         return renderScenarioEvidenceTable({
             title: "Targeted Resource Paths",
-            caption: `${formatNumber.format(rows.length)} change-validation probes - worst elapsed ${worstElapsed ? formatMs(worstElapsed) : "-"}`,
+            caption: `${formatNumber.format(rows.length)} change-validation probes - elapsed is probe wall time, target result is the measured operation when reported`,
             open: options.open ?? (rows.length > 0),
-            headers: ["Probe", "Focus", "Samples", "Max elapsed", "Peak live", "Working set", "PF growth", "Handle growth"],
+            headers: ["Probe", "Focus", "Samples", "Target result", "Max elapsed", "Allocated", "Peak live", "Working set", "PF growth", "Handle growth"],
             rows: body,
         });
     }
@@ -2654,17 +2723,57 @@
         return [...new Set(families)].sort();
     }
 
+    function performanceRowKey(item) {
+        return [
+            item?.latency_kind,
+            item?.benchmark_key,
+            item?.scenario_id,
+            item?.id,
+            item?.name,
+            item?.label,
+            item?.scenario_label,
+            item?.scaling_axis,
+        ].filter(Boolean).join(" ").toLowerCase();
+    }
+
+    function isAggregateCompletionRow(item) {
+        const key = performanceRowKey(item);
+        const latencyKind = String(item?.latency_kind || "").toLowerCase();
+        const scalingAxis = String(item?.scaling_axis || "").toLowerCase();
+        const isCompletion = latencyKind === "completion" || key.includes("completion");
+        const isAggregate = scalingAxis === "aggregate_size" || key.includes("aggregate_size");
+        const isSearch = key.includes("search") || String(item?.family || item?.workload_family || "").toLowerCase().includes("search");
+        return isSearch && isCompletion && isAggregate;
+    }
+
+    function isEvidenceOverBudget(item) {
+        if (item?.over_budget === true) return true;
+        const mean = Number(item?.mean_ms || 0);
+        const budget = Number(item?.budget_ms || 0);
+        return budget > 0 && mean > budget;
+    }
+
+    function scenarioBudgetSplit(scenario) {
+        const rows = (scenario?.evidence?.latency || []).filter(isEvidenceOverBudget);
+        const throughputMisses = rows.filter(isAggregateCompletionRow).length;
+        const strictMisses = rows.length - throughputMisses;
+        const reportedMisses = Number(scenario?.budget_misses || 0);
+        const unknownMisses = Math.max(0, reportedMisses - rows.length);
+        return { strictMisses, throughputMisses, unknownMisses, totalMisses: reportedMisses || rows.length };
+    }
+
     function scenarioStatus(scenario) {
         const checks = scenario.scale_checks || [];
         const missingScale = checks.some((check) => !check.met);
-        const misses = Number(scenario.budget_misses || 0);
+        const budgetSplit = scenarioBudgetSplit(scenario);
+        const responseMisses = budgetSplit.strictMisses + budgetSplit.unknownMisses;
         if (!scenario.implementation_count && scenario.coverage_status !== "covered") {
             return { label: "Untested", cls: "stale" };
         }
         if (missingScale) {
             return { label: "Below target", cls: "bad" };
         }
-        if (misses > 0) {
+        if (responseMisses > 0 || budgetSplit.throughputMisses > 0) {
             return { label: "Watch", cls: "watch" };
         }
         return { label: "Met", cls: "ok" };
@@ -2699,7 +2808,7 @@
     function computePerformanceConfidenceSignal(digest = computePerformanceDigest()) {
         const scenarioTotal = Number(digest.scenarioTotal || 0);
         const metRatio = scenarioTotal ? Number(digest.scenariosMet || 0) / scenarioTotal : 0;
-        const budgetPenalty = Number(digest.summaryBudgetMisses || 0) * 10;
+        const budgetPenalty = Number(digest.summaryBudgetMisses || 0) * 10 + Number(digest.summaryThroughputWatches || 0) * 3;
         const ceilingPenalty = Number(digest.nearCeilings || 0) * 8;
         const gapPenalty = Math.max(0, 6 - Number(digest.measurementGapsClosed || 0)) * 4;
         const confidence = scenarioTotal
@@ -2707,8 +2816,12 @@
             : 0;
         const worst = digest.worstOverBudgetRow;
         const worstRatio = worst ? budgetRatio(worst) : 0;
+        const throughput = digest.worstThroughputRow;
+        const throughputRatio = throughput ? budgetRatio(throughput) : 0;
         const detail = worst && worstRatio > 1
             ? `${performanceRowLabel(worst)} is ${formatRatio(worstRatio)} over budget at ${formatMs(latencyMs(worst))}.`
+            : throughput && throughputRatio > 1
+                ? `${performanceRowLabel(throughput)} is a throughput watch at ${formatMs(latencyMs(throughput))}; first-response rows stay separate.`
             : `${formatNumber.format(digest.scenariosMet)} of ${formatNumber.format(scenarioTotal)} promises met, ${formatNumber.format(digest.measurementGapsClosed)} measurement gaps closed.`;
         return {
             confidence,
@@ -2716,6 +2829,8 @@
             scenarioTotal,
             worst,
             worstRatio,
+            throughput,
+            throughputRatio,
         };
     }
 
@@ -2727,13 +2842,14 @@
             headline: "",
             detail: signal.detail,
             action: signal.scenarioTotal
-                ? { label: digest.summaryBudgetMisses ? "Inspect evidence" : "Review probes", scrollTo: digest.summaryBudgetMisses ? "performance-promise-board" : "performance-measurement-gaps" }
+                ? { label: digest.summaryBudgetMisses || digest.summaryThroughputWatches ? "Inspect evidence" : "Review probes", scrollTo: digest.summaryBudgetMisses || digest.summaryThroughputWatches ? "performance-promise-board" : "performance-measurement-gaps" }
                 : { label: "Refresh Performance", runCategory: "performance" },
             metrics: [
                 { label: "Promises met", value: `${formatNumber.format(digest.scenariosMet)}/${formatNumber.format(signal.scenarioTotal)}`, detail: "scenario coverage", tone: signal.scenarioTotal && digest.scenariosMet === signal.scenarioTotal ? "ok" : "watch" },
-                { label: "Budget misses", value: formatNumber.format(digest.summaryBudgetMisses), detail: "latency checks", tone: digest.summaryBudgetMisses ? "bad" : "ok", series: runMetricSeries("capacity_risk_count") },
+                { label: "Response misses", value: formatNumber.format(digest.summaryBudgetMisses), detail: "first/current latency", tone: digest.summaryBudgetMisses ? "bad" : "ok", series: runMetricSeries("capacity_risk_count") },
+                { label: "Throughput watch", value: formatNumber.format(digest.summaryThroughputWatches), detail: "aggregate completion", tone: digest.summaryThroughputWatches ? "watch" : "ok" },
                 { label: "Near ceilings", value: formatNumber.format(digest.nearCeilings), detail: "capacity probes", tone: digest.nearCeilings ? "watch" : "ok" },
-                { label: "Worst latency", value: signal.worst && signal.worstRatio > 0 ? `${formatRatio(signal.worstRatio)}x` : "-", detail: signal.worst ? "of budget" : "no breach", tone: signal.worstRatio > 1 ? "bad" : signal.worstRatio > 0.85 ? "watch" : "ok" },
+                { label: "Worst latency", value: signal.worst && signal.worstRatio > 0 ? formatRatio(signal.worstRatio) : signal.throughput && signal.throughputRatio > 0 ? formatRatio(signal.throughputRatio) : "-", detail: signal.worst ? "response budget" : signal.throughput ? "throughput budget" : "no breach", tone: signal.worstRatio > 1 ? "bad" : signal.throughputRatio > 1 ? "watch" : signal.worstRatio > 0.85 ? "watch" : "ok" },
                 { label: "Peak memory", value: digest.peakWorkingSet ? formatBytes(digest.peakWorkingSet) : "-", detail: "working set", tone: digest.peakWorkingSet ? "watch" : "stale" },
             ],
         });
@@ -2759,10 +2875,12 @@
                     </div>
                     <span class="status-pill status-pill--ok" title="Focused probe samples loaded">${escapeHtml(row.badge)}</span>
                 </div>
+                ${row.targetMetric ? `<div class="performance-gap-card__target"><strong>${escapeHtml(row.targetMetric.value)}</strong><span>${escapeHtml(row.targetMetric.label)}</span></div>` : ""}
                 ${row.chartKind === "tab-phase" ? renderTargetedTabPhaseChart(row) : renderMeasurementGapChart(row)}
                 <div class="performance-gap-card__metrics">
                     <span><strong>${escapeHtml(formatMs(row.maxElapsedMs))}</strong><em>max elapsed</em></span>
-                    <span><strong>${escapeHtml(formatBytes(row.maxPeakBytes))}</strong><em>peak allocation</em></span>
+                    <span><strong>${escapeHtml(formatBytes(row.maxAllocatedBytes))}</strong><em>allocated</em></span>
+                    <span><strong>${escapeHtml(formatBytes(row.maxPeakBytes))}</strong><em>peak live</em></span>
                     <span><strong>${escapeHtml(row.maxWorkloadLabel)}</strong><em>largest run</em></span>
                 </div>
             </article>`;
@@ -2776,6 +2894,7 @@
             "provenance-store retained memory after hundreds of thousands of edits and history-budget eviction",
             "anchor-heavy editing with many views, selections, search results, and scroll anchors",
             "fragmented-buffer paste/cut/undo/redo after long sessions",
+            "render cost for horizontal and vertical tab-strip virtualization at many-tab scale",
             "session persistence broken down into snapshot cost, serialization cost, file I/O, and restore reconstruction",
         ];
         const grouped = new Map();
@@ -2794,6 +2913,7 @@
             const samples = rows.flatMap((row) => row.samples || []);
             const largestSample = maxBy(samples, (sample) => Number(sample.workload_value || 0));
             const elapsed = Math.max(...rows.map((row) => Number(row.max_elapsed_ms || 0)), 0);
+            const allocated = Math.max(...rows.map((row) => Number(row.max_allocated_bytes || 0)), 0);
             const peak = Math.max(...rows.map((row) => Number(row.max_peak_live_bytes || row.max_working_set_bytes || 0)), 0);
             const promise = performancePromiseForItem(representative);
             const series = samples
@@ -2814,8 +2934,10 @@
                 color: promise.color,
                 badge: `${series.length || rows.length} samples`,
                 maxElapsedMs: elapsed,
+                maxAllocatedBytes: allocated,
                 maxPeakBytes: peak,
                 maxWorkloadLabel: largestSample?.workload_label || "-",
+                targetMetric: resourceTargetMetric(largestSample),
                 series,
             };
         }).filter(Boolean);
@@ -2863,12 +2985,14 @@
             color: performancePromiseForItem({ workload_family: "tab-management" }).color,
             badge: `${seriesGroups.length} phases`,
             maxElapsedMs: Math.max(...allPoints.map((point) => point.elapsedMs), 0),
+            maxAllocatedBytes: Math.max(...allScenarios.map((scenario) => Number(scenario.max_allocated_bytes || 0)), 0),
             maxPeakBytes: Math.max(
                 ...allScenarios.map((scenario) => Number(scenario.max_peak_live_bytes || scenario.max_working_set_bytes || 0)),
                 ...allPoints.map((point) => point.peakBytes || 0),
                 0
             ),
             maxWorkloadLabel: largestSample?.workloadLabel || "-",
+            targetMetric: null,
             seriesGroups,
         };
     }
@@ -2880,9 +3004,26 @@
             "provenance-store retained memory after hundreds of thousands of edits and history-budget eviction": "Provenance Retention",
             "anchor-heavy editing with many views, selections, search results, and scroll anchors": "Anchor-Heavy Editing",
             "fragmented-buffer paste/cut/undo/redo after long sessions": "Fragmented Mutation",
+            "render cost for horizontal and vertical tab-strip virtualization at many-tab scale": "Tab Strip Frame Cost",
             "session persistence broken down into snapshot cost, serialization cost, file I/O, and restore reconstruction": "Session Stage Costs",
         };
         return titles[gap] || titleCaseMetricName(gap);
+    }
+
+    function resourceTargetMetric(sample) {
+        if (!sample?.result_label) return null;
+        const label = String(sample.result_label);
+        if (/ns\/frame/i.test(label)) {
+            const ns = Number(sample.result_value || 0);
+            const frameMs = ns > 0 ? ns / 1_000_000 : null;
+            const match = label.match(/across\s+([0-9,]+)\s+frames/i);
+            const suffix = match ? `, ${match[1]} frames` : "";
+            return {
+                value: frameMs ? `${formatNumber.format(frameMs)} ms/frame` : label,
+                label: `target result${suffix}`,
+            };
+        }
+        return null;
     }
 
     function renderMeasurementGapChart(row) {
@@ -2922,7 +3063,7 @@
             if (samples.length > 4 && index % Math.ceil(samples.length / 4) !== 0 && index !== samples.length - 1) return "";
             return `<text x="${xFor(index).toFixed(1)}" y="${height - 10}" text-anchor="middle">${escapeHtml(shortWorkloadLabel(sample.workloadLabel))}</text>`;
         }).join("");
-        return `<svg class="performance-gap-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(row.title)} elapsed and peak memory chart">
+        return `<svg class="performance-gap-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(row.title)} probe elapsed and peak live memory chart">
             <g class="performance-gap-chart__grid">
                 <line x1="${left}" x2="${width - right}" y1="${top}" y2="${top}"></line>
                 <line x1="${left}" x2="${width - right}" y1="${top + plotHeight / 2}" y2="${top + plotHeight / 2}"></line>
@@ -2932,8 +3073,8 @@
             <polyline class="performance-gap-chart__memory-line" points="${linePoints}"></polyline>
             <g class="performance-gap-chart__memory-points">${markers}</g>
             <g class="performance-gap-chart__labels">${labels}</g>
-            <text class="performance-gap-chart__axis" x="${left}" y="12">${escapeHtml(formatMs(maxElapsed))}</text>
-            <text class="performance-gap-chart__axis performance-gap-chart__axis--right" x="${width - right}" y="12" text-anchor="end">${escapeHtml(formatBytes(maxPeak))}</text>
+            <text class="performance-gap-chart__axis" x="${left}" y="12">${escapeHtml(`probe ${formatMs(maxElapsed)}`)}</text>
+            <text class="performance-gap-chart__axis performance-gap-chart__axis--right" x="${width - right}" y="12" text-anchor="end">${escapeHtml(`peak ${formatBytes(maxPeak)}`)}</text>
         </svg>`;
     }
 
@@ -3029,9 +3170,10 @@
         const summary = state.performanceReview?.summary || {};
         const budgetedRows = filteredPerformanceRows(uniquePerformanceRows([...searchRows, ...slowspots]).filter((item) => item.threshold_ms));
         const ratios = budgetedRows.map((item) => ({ item, ratio: budgetRatio(item) })).filter((entry) => Number.isFinite(entry.ratio) && entry.ratio > 0);
-        const overBudget = ratios.filter((entry) => entry.ratio > 1).length;
-        const watchCount = ratios.filter((entry) => entry.ratio >= 0.85 && entry.ratio <= 1).length;
-        const withinBudget = ratios.length - overBudget;
+        const responseMisses = ratios.filter((entry) => budgetPressureTone(entry.item, entry.ratio) === "bad").length;
+        const throughputWatches = ratios.filter((entry) => isAggregateCompletionRow(entry.item) && entry.ratio > 1).length;
+        const watchCount = ratios.filter((entry) => budgetPressureTone(entry.item, entry.ratio) === "watch").length;
+        const withinBudget = ratios.length - responseMisses - throughputWatches;
         const sortedRatios = [...ratios].sort((a, b) => b.ratio - a.ratio);
         const healthyRatios = [...ratios].sort((a, b) => a.ratio - b.ratio);
         const scenarioStatuses = reviewScenarios.map(scenarioStatus);
@@ -3054,15 +3196,20 @@
             resourceRows,
             reviewScenarios,
             budgetedRows,
-            overBudget,
+            overBudget: responseMisses,
+            responseMisses,
+            throughputWatches,
             watchCount,
             withinBudget,
             worstRow: sortedRatios[0]?.item || null,
-            worstOverBudgetRow: sortedRatios.find((entry) => entry.ratio > 1)?.item || null,
+            worstOverBudgetRow: sortedRatios.find((entry) => budgetPressureTone(entry.item, entry.ratio) === "bad")?.item || null,
+            worstThroughputRow: sortedRatios.find((entry) => isAggregateCompletionRow(entry.item) && entry.ratio > 1)?.item || null,
             bestRow: healthyRatios[0]?.item || null,
             scenarioTotal: reviewScenarios.length,
             scenariosMet,
-            summaryBudgetMisses: summary.budget_misses ?? overBudget,
+            summaryBudgetMisses: responseMisses,
+            summaryThroughputWatches: throughputWatches,
+            reportedBudgetMisses: summary.budget_misses ?? (responseMisses + throughputWatches),
             nearCeilings,
             measurementGapsClosed,
             capacityCeilings,
@@ -3133,6 +3280,25 @@
         return latencyMs(item) / threshold;
     }
 
+    function budgetRatioFromMs(item, meanField = "mean_ms", budgetField = "budget_ms") {
+        const budget = Number(item?.[budgetField] || 0);
+        if (!budget) return 0;
+        return Number(item?.[meanField] || 0) / budget;
+    }
+
+    function budgetPressureTone(item, ratio = budgetRatio(item)) {
+        if (ratio > 1) {
+            return isAggregateCompletionRow(item) ? "watch" : "bad";
+        }
+        if (ratio >= 0.85) return "watch";
+        return "ok";
+    }
+
+    function evidenceBudgetTone(item, ratio = null) {
+        const resolvedRatio = ratio ?? budgetRatioFromMs(item);
+        return budgetPressureTone(item, resolvedRatio);
+    }
+
     function buildPerformanceAnswerChainData() {
         const budgetRows = [
             ...(state.searchSpeed || []).map((item) => ({ ...item, sourceLabel: "Search" })),
@@ -3150,6 +3316,7 @@
                     detail: `${item.sourceLabel || "Performance"} - ${formatMs(latencyMs(item))} / ${formatMs(item.threshold_ms)}`,
                     value,
                     valueLabel: formatRatio(value),
+                    tone: budgetPressureTone(item, value),
                     family: item.workload_family || item.family || "unmapped",
                     resource: item.suspected_limiting_resource || "cpu",
                     profile: (item.matching_flamegraphs || [])[0],
@@ -3633,14 +3800,18 @@
         const bounds = normalisePerformanceBounds(items.map((item) => item.value), options.bounds);
         const x = (value) => performanceScaleTransform(value, bounds) * 100;
         const target = (options.markers || [])[0]?.value ?? 1;
+        const targetPct = x(target);
         return `<div class="performance-strip" role="img" aria-label="${escapeHtml(options.title)} strip">
-            <div class="performance-strip__target" style="left:${x(target)}%"></div>
             ${sorted.map((item) => {
             const pct = x(item.value);
             const cls = item.failed && item.value < 1 ? "bad" : item.failed ? "watch" : "ok";
             return `<div class="performance-strip-row performance-strip-row--${cls}">
                     <span><strong>${escapeHtml(item.label)}</strong><em>${escapeHtml(item.detail)}</em></span>
-                    <div><i style="width:${pct}%"></i><b style="left:${pct}%"></b></div>
+                    <div>
+                        <span class="performance-strip-row__target" style="left:${targetPct}%"></span>
+                        <i style="width:${pct}%"></i>
+                        <b style="left:${pct}%"></b>
+                    </div>
                     <strong>${escapeHtml(options.valueLabel(item.value))}</strong>
                 </div>`;
         }).join("")}
@@ -3684,7 +3855,8 @@
     }
 
     function renderPerformanceMetricRow(item, index, options) {
-        const cls = item.value >= 1 ? "risk-bad" : item.value >= 0.7 ? "risk-warn" : "risk-good";
+        const tone = item.tone || (item.value >= 1 ? "bad" : item.value >= 0.7 ? "watch" : "ok");
+        const cls = tone === "bad" ? "risk-bad" : tone === "watch" ? "risk-warn" : "risk-good";
         return `<div class="quality-feed__row performance-metric-row" style="--promise-color:${escapeHtml(item.color || performancePromiseColor(item.promiseId || item.label))}">
             <span class="rank-pill">${index + 1}</span>
             <span class="quality-feed__name"><code>${escapeHtml(item.label)}</code><span class="muted quality-feed__detail">${escapeHtml([item.promiseTitle, item.detail].filter(Boolean).join(" - "))}</span></span>
@@ -4038,7 +4210,7 @@
         const rows = digest.budgetedRows
             .map((item) => ({ item, ratio: budgetRatio(item) }))
             .filter((row) => row.ratio >= 0.85)
-            .sort((a, b) => b.ratio - a.ratio)
+            .sort((a, b) => statusRank(budgetPressureTone(a.item, a.ratio)) - statusRank(budgetPressureTone(b.item, b.ratio)) || b.ratio - a.ratio)
             .slice(0, 12);
         return renderCuratedTable({
             title: "Risk List",
@@ -4049,7 +4221,7 @@
                 <td><span class="pill">${escapeHtml(item.workload_family || item.family || "unmapped")}</span></td>
                 <td>${formatMs(latencyMs(item))}</td>
                 <td>${formatMs(item.threshold_ms)}</td>
-                <td><span class="status-pill status-pill--${ratio > 1 ? "bad" : "watch"}">${formatRatio(ratio)}</span></td>
+                <td><span class="status-pill status-pill--${budgetPressureTone(item, ratio)}">${formatRatio(ratio)}</span></td>
                 <td><span class="pill">${escapeHtml(item.suspected_limiting_resource || "cpu")}</span></td>
                 <td>${renderPrimaryAction(item)}</td>
             </tr>`),
@@ -4312,6 +4484,13 @@
         renderRunStrip();
     }
 
+    function invalidateAppPackageConsumers() {
+        renderedTabs.delete("overview");
+        if (byId("overview")?.classList.contains("is-active")) {
+            renderTopConcerns();
+        }
+    }
+
     function classifyStatus(level) {
         if (level === "stale") return { label: "Stale", cls: "stale" };
         if (level === "bad") return { label: "Regressed", cls: "bad" };
@@ -4407,6 +4586,10 @@
         const summary = speed.summary || {};
         const reviewSummary = state.performanceReview?.summary || {};
         const triageSummary = speed.triage_summary || null;
+        const speedRows = speedReportScenarios();
+        const speedOverBudgetRows = speedRows.filter((item) => item.over_budget);
+        const responsivenessMisses = speedOverBudgetRows.filter((item) => budgetPressureTone(item, budgetRatioFromMs(item)) === "bad").length;
+        const throughputWatches = speedOverBudgetRows.filter((item) => budgetPressureTone(item, budgetRatioFromMs(item)) === "watch").length;
         const performance = computePerformanceConfidenceSignal();
         const overBudget = summary.over_budget_latency ?? 0;
         const implementations = reviewSummary.implementation_count ?? 0;
@@ -4415,11 +4598,11 @@
         let value = "0";
         let driver = "All scenarios within budget";
         if (triageSummary) {
-            const critical = triageSummary.critical ?? 0;
+            const critical = responsivenessMisses;
             const watch = triageSummary.watch ?? 0;
-            value = String(critical + watch);
-            if (critical > 0) { status = "bad"; driver = `${critical} critical, ${watch} to watch`; }
-            else if (watch > 0) { status = "watch"; driver = `${watch} scenarios approaching budget`; }
+            value = String(critical + throughputWatches + watch);
+            if (critical > 0) { status = "bad"; driver = `${critical} responsiveness misses, ${throughputWatches} throughput watches`; }
+            else if (throughputWatches > 0 || watch > 0) { status = "watch"; driver = `${throughputWatches} throughput watches, ${watch} scenarios approaching budget`; }
         } else {
             const total = overBudget + ceilings;
             value = String(total);
@@ -4447,7 +4630,10 @@
     }
 
     function currentFrameScenario() {
-        const scenarios = speedReportScenarios();
+        const frameMetricsScenarios = Array.isArray(state.frameMetrics?.scenarios)
+            ? state.frameMetrics.scenarios
+            : [];
+        const scenarios = frameMetricsScenarios.length ? frameMetricsScenarios : speedReportScenarios();
         const preferredIds = [
             "editor_scroll_frame_120hz/4194304",
             "editor_scroll_frame_120hz/1048576",
@@ -4479,6 +4665,10 @@
         }
 
         const fps = 1000 / frameMs;
+        const p95Ms = Number(scenario?.p95_ms || 0);
+        const meanMs = Number(scenario?.mean_ms || 0);
+        const p95Fps = p95Ms > 0 ? 1000 / p95Ms : null;
+        const meanFps = meanMs > 0 ? 1000 / meanMs : null;
         const status = frameMs <= goalFrameMs && !scenario.over_budget ? "ok" : "bad";
         const frameLabel = scenario?.p99_ms ? "p99" : scenario?.p95_ms ? "p95" : "avg";
         const loadLabel = scenarioId.includes("4194304")
@@ -4487,13 +4677,16 @@
                 ? "1 MiB wheel scroll"
                 : "steady repaint";
         const supporting = [
-            scenario?.p95_ms ? `p95 ${formatNumber.format(scenario.p95_ms)} ms` : null,
-            scenario?.mean_ms ? `mean ${formatNumber.format(scenario.mean_ms)} ms` : null,
+            meanFps ? `mean ${formatNumber.format(meanFps)} FPS` : null,
+            p95Fps ? `p95 ${formatNumber.format(p95Fps)} FPS` : null,
         ].filter(Boolean).join(", ");
         return {
             status,
+            label: scenario?.p99_ms ? "Potential FPS (p99)" : "Potential FPS",
             value: `${formatNumber.format(fps)} FPS`,
-            driver: `${frameLabel} ${formatNumber.format(frameMs)} ms, ${loadLabel}, ${goalFps} FPS goal (${formatNumber.format(goalFrameMs)} ms)${supporting ? `; ${supporting}` : ""}`,
+            metricDetail: `${frameLabel} ${formatNumber.format(frameMs)} ms frame cost`,
+            metricSupport: supporting ? `High-refresh potential, ${supporting}` : "High-refresh potential",
+            driver: `${formatNumber.format(fps)} FPS potential from ${frameLabel} ${formatNumber.format(frameMs)} ms, ${loadLabel}; assumes a sufficiently high-refresh monitor${supporting ? `; ${supporting}` : ""}`,
             series: runMetricSeries("app_fps"),
         };
     }
@@ -4553,7 +4746,7 @@
         const healths = [
             { label: "Quality", ...quality, tab: "quality-review" },
             { label: "Capacity", ...capacity, tab: "performance-review" },
-            { label: "FPS", ...fps, tab: "performance-review" },
+            { label: fps.label || "Potential FPS", ...fps, tab: "performance-review", displayValue: fps.value },
             { label: "Correctness", ...correctness, tab: "correctness-review" },
         ];
         const healthConfidenceValue = (item) => item.confidence ?? healthConfidence(item.status);
@@ -4580,8 +4773,9 @@
                 : null,
             metrics: healths.map((item) => ({
                 label: item.label,
-                value: String(healthConfidenceValue(item)),
-                detail: classifyStatus(item.status).label,
+                value: String(item.displayValue ?? healthConfidenceValue(item)),
+                detail: item.metricDetail || classifyStatus(item.status).label,
+                support: item.metricSupport || "",
                 tone: classifyStatus(item.status).cls,
                 series: item.series,
             })),
@@ -4751,7 +4945,7 @@
             offset += span;
             return `${item.color} ${start}% ${offset}%`;
         }).join(", ");
-        const latestDate = latest.date ? new Date(latest.date).toLocaleDateString() : "-";
+        const latestDate = latest.date ? formatDate(latest.date) : "-";
         target.innerHTML = `<div class="code-pie__chart" style="background: conic-gradient(from -90deg, ${stops || "#344151 0 100%"})">
                 <div class="code-pie__center">
                     <span>Total Rust</span>
@@ -4781,7 +4975,7 @@
             target.innerHTML = `<p class="muted">No GitHub line history loaded yet.</p>`;
             return;
         }
-        const w = 720, h = 260, padLeft = 58, padRight = 18, padTop = 18, padBottom = 42;
+        const w = 900, h = 260, padLeft = 72, padRight = 76, padTop = 18, padBottom = 42;
         const series = codeMetricParts().map((part) => ({
             ...part,
             values: history.map((item) => Number(item.lines?.[part.key] || 0)),
@@ -4790,15 +4984,68 @@
         const min = Math.min(...allValues);
         const max = Math.max(...allValues);
         const range = max - min || 1;
+        const first = history[0];
+        const last = history[history.length - 1];
         const xFor = (index) => padLeft + (index * (w - padLeft - padRight)) / Math.max(1, history.length - 1);
         const yFor = (value) => h - padBottom - ((value - min) / range) * (h - padTop - padBottom);
+        const historyTotal = (item) => Number(item.lines?.total || 0);
+        const dailyTotals = [];
+        history.forEach((item, index) => {
+            const key = dateKey(item.date);
+            const current = dailyTotals[dailyTotals.length - 1];
+            if (current && current.key === key) {
+                current.endIndex = index;
+                current.total = historyTotal(item);
+                current.date = item.date;
+                return;
+            }
+            dailyTotals.push({
+                key,
+                date: item.date,
+                startIndex: index,
+                endIndex: index,
+                total: historyTotal(item),
+            });
+        });
+        const dailyBars = dailyTotals.map((day, index) => {
+            const previousTotal = index > 0 ? dailyTotals[index - 1].total : 0;
+            const delta = day.total - previousTotal;
+            return {
+                ...day,
+                dayIndex: index,
+                added: Math.max(0, delta),
+                rawDelta: delta,
+                index: (day.startIndex + day.endIndex) / 2,
+            };
+        }).filter((day) => day.added > 0);
+        const dailyMax = Math.max(1, ...dailyBars.map((day) => day.added));
+        const yForDaily = (value) => h - padBottom - (value / dailyMax) * (h - padTop - padBottom);
+        const firstTime = new Date(first.date || 0).getTime();
+        const lastTime = new Date(last.date || 0).getTime();
+        const elapsedDays = Number.isFinite(firstTime) && Number.isFinite(lastTime)
+            ? Math.max(1, Math.round((lastTime - firstTime) / 86_400_000))
+            : Math.max(1, dailyTotals.length);
+        const averageDailyLines = historyTotal(last) / elapsedDays;
+        const averageDailyY = yForDaily(Math.min(dailyMax, averageDailyLines));
+        const barWidth = Math.max(3, Math.min(16, (w - padLeft - padRight) / Math.max(8, dailyTotals.length) * 0.58));
+        const bars = dailyBars.map((day) => {
+            const x = xFor(day.index) - barWidth / 2;
+            const y = yForDaily(day.added);
+            const height = h - padBottom - y;
+            const commit = history[day.endIndex] || {};
+            const label = `${formatDate(day.date)}: ${formatNumber.format(day.added)} net lines added. ${commit.subject || ""}`;
+            return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${height.toFixed(1)}" rx="2"
+                tabindex="0"
+                role="img"
+                aria-label="${escapeHtml(label)}"
+                data-code-bar-date="${escapeHtml(formatDate(day.date))}"
+                data-code-bar-lines="${escapeHtml(formatNumber.format(day.added))}"
+                data-code-bar-subject="${escapeHtml(commit.subject || "-")}"></rect>`;
+        }).join("");
         const lineSeries = series.map((item) => {
             const points = item.values.map((value, index) => `${xFor(index).toFixed(1)},${yFor(value).toFixed(1)}`).join(" ");
             return `<polyline class="code-history__line" style="--series-color:${item.color}" points="${points}" />`;
         }).join("");
-        const first = history[0];
-        const last = history[history.length - 1];
-        const latestApplication = Number(last.lines?.application || state.projectCodeMetrics?.current?.application || 0);
         const ticks = [min, min + range / 2, max].map((value) => {
             const y = yFor(value);
             return `<g>
@@ -4806,31 +5053,192 @@
                 <text x="${padLeft - 10}" y="${(y + 4).toFixed(1)}">${escapeHtml(formatNumber.format(Math.round(value)))}</text>
             </g>`;
         }).join("");
+        const dailyTicks = [0, dailyMax / 2, dailyMax].map((value) => {
+            const y = yForDaily(value);
+            return `<g>
+                <line x1="${w - padRight}" x2="${w - padRight + 5}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />
+                <text x="${w - padRight + 10}" y="${(y + 4).toFixed(1)}">${escapeHtml(formatNumber.format(Math.round(value)))}</text>
+            </g>`;
+        }).join("");
+        const releases = codeReleaseMarkers(history);
+        const releaseLines = releases.map((release, index) => {
+            const x = xFor(release.index);
+            const label = formatReleaseLabel(release.name || release.tag || release.version || "release");
+            const y = 13 + (index % 3) * 14;
+            const title = `${label} · ${formatDate(release.date)}\n${release.short_sha || release.sha || ""} ${release.subject || ""}`;
+            return `<g class="code-history__release">
+                <line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${padTop}" y2="${h - padBottom}" />
+                <text x="${x.toFixed(1)}" y="${y}" text-anchor="middle">${escapeHtml(label)}</text>
+                <title>${escapeHtml(title)}</title>
+            </g>`;
+        }).join("");
         const markers = series.map((seriesItem) => history.map((item, index) => {
-            const date = item.date ? new Date(item.date).toLocaleDateString() : "-";
+            const date = item.date ? formatDate(item.date) : "-";
             const value = seriesItem.values[index];
             const title = `${date}: ${seriesItem.label} ${formatNumber.format(value)} lines\n${item.short_sha || ""} ${item.subject || ""}`;
             return `<circle style="--series-color:${seriesItem.color}" cx="${xFor(index).toFixed(1)}" cy="${yFor(value).toFixed(1)}" r="2.7"><title>${escapeHtml(title)}</title></circle>`;
         }).join("")).join("");
-        const legend = series.map((item) => {
+        const legend = `${series.map((item) => {
             const latest = item.values[item.values.length - 1] || 0;
             return `<span class="code-history__legend-item">
                 <i style="background:${item.color}"></i>
                 ${escapeHtml(item.label)}
                 <strong>${formatNumber.format(latest)}</strong>
             </span>`;
-        }).join("");
+        }).join("")}
+            <span class="code-history__legend-item code-history__legend-item--bar">
+                <i></i>Peak net/day<strong>${formatNumber.format(dailyMax)}</strong>
+            </span>
+            <span class="code-history__legend-item code-history__legend-item--average">
+                <i></i>Avg net/day<strong>${formatNumber.format(Math.round(averageDailyLines))}</strong>
+            </span>
+            ${releases.length ? `<span class="code-history__legend-item code-history__legend-item--release"><i></i>Releases<strong>${formatNumber.format(releases.length)}</strong></span>` : ""}`;
         target.innerHTML = `<div class="code-history__meta">
-                <span>${escapeHtml(first.date ? new Date(first.date).toLocaleDateString() : "-")}</span>
-                <strong>Application Code: ${formatNumber.format(latestApplication)}</strong>
-                <span>${escapeHtml(last.date ? new Date(last.date).toLocaleDateString() : "-")}</span>
+                <span>${escapeHtml(first.date ? formatDate(first.date) : "-")}</span>
+                <span>${escapeHtml(last.date ? formatDate(last.date) : "-")}</span>
             </div>
-            <svg class="code-history__chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Application, test, and other Rust code lines over time">
+            <svg class="code-history__chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Total Rust lines of code on the left axis and net Rust lines added per day on the right axis">
+                <text class="code-history__axis-title" x="16" y="${padTop + (h - padTop - padBottom) / 2}" text-anchor="middle" transform="rotate(-90 16 ${padTop + (h - padTop - padBottom) / 2})">Total Code</text>
+                <text class="code-history__daily-title" x="${w - 16}" y="${padTop + (h - padTop - padBottom) / 2}" text-anchor="middle" transform="rotate(90 ${w - 16} ${padTop + (h - padTop - padBottom) / 2})">New Code</text>
                 <g class="code-history__grid">${ticks}</g>
+                <g class="code-history__daily-axis">${dailyTicks}</g>
+                <g class="code-history__bars">${bars}</g>
+                <line class="code-history__daily-average" x1="${padLeft}" x2="${w - padRight}" y1="${averageDailyY.toFixed(1)}" y2="${averageDailyY.toFixed(1)}">
+                    <title>${escapeHtml(`Average net growth since first commit: ${formatNumber.format(Math.round(averageDailyLines))} lines/day`)}</title>
+                </line>
+                <g class="code-history__releases">${releaseLines}</g>
                 <g class="code-history__series">${lineSeries}</g>
                 <g class="code-history__markers">${markers}</g>
             </svg>
+            <div class="ll-popover code-history-popover" hidden></div>
             <div class="code-history__legend">${legend}</div>`;
+        bindCodeHistoryBarPopover(target);
+    }
+
+    function bindCodeHistoryBarPopover(target) {
+        const popover = target.querySelector(".code-history-popover");
+        const bars = target.querySelectorAll(".code-history__bars rect");
+        if (!popover || !bars.length) {
+            return;
+        }
+        let pinnedBar = null;
+        const hide = (force = false) => {
+            if (pinnedBar && !force) {
+                return;
+            }
+            popover.hidden = true;
+            bars.forEach((bar) => bar.classList.remove("is-active"));
+        };
+        const show = (bar, pinned = false) => {
+            if (pinned) {
+                pinnedBar = bar;
+            } else if (!pinnedBar) {
+                bars.forEach((item) => item.classList.remove("is-active"));
+            }
+            const barRect = bar.getBoundingClientRect();
+            const hostRect = target.getBoundingClientRect();
+            const left = barRect.left - hostRect.left + barRect.width / 2;
+            const top = barRect.top - hostRect.top;
+            bar.classList.add("is-active");
+            popover.hidden = false;
+            popover.classList.toggle("ll-popover--left", left > hostRect.width * 0.68);
+            popover.classList.toggle("ll-popover--top", top < 120);
+            popover.classList.toggle("ll-popover--bottom", top > hostRect.height - 120);
+            popover.style.left = `${left}px`;
+            popover.style.top = `${top}px`;
+            popover.innerHTML = `<strong>${escapeHtml(bar.dataset.codeBarDate || "-")}</strong>
+                <div><span>Lines of code</span><b>${escapeHtml(bar.dataset.codeBarLines || "-")}</b></div>
+                <div><span>Git message</span><b>${escapeHtml(bar.dataset.codeBarSubject || "-")}</b></div>`;
+        };
+        bars.forEach((bar) => {
+            bar.addEventListener("mouseenter", () => show(bar));
+            bar.addEventListener("mousemove", () => show(bar));
+            bar.addEventListener("pointerenter", () => show(bar));
+            bar.addEventListener("pointermove", () => show(bar));
+            bar.addEventListener("mousedown", (event) => {
+                event.stopPropagation();
+                show(bar, true);
+            });
+            bar.addEventListener("pointerdown", (event) => {
+                event.stopPropagation();
+                show(bar, true);
+            });
+            bar.addEventListener("click", (event) => {
+                event.stopPropagation();
+                show(bar, true);
+            });
+            bar.addEventListener("focus", () => show(bar));
+            bar.addEventListener("mouseleave", hide);
+            bar.addEventListener("pointerleave", hide);
+            bar.addEventListener("blur", hide);
+        });
+        document.addEventListener("click", () => {
+            pinnedBar = null;
+            hide(true);
+        }, { once: true });
+    }
+
+    function codeReleaseMarkers(history) {
+        const explicit = [
+            ...(Array.isArray(state.projectCodeMetrics?.releases) ? state.projectCodeMetrics.releases : []),
+            ...(Array.isArray(state.projectCodeMetrics?.release_markers) ? state.projectCodeMetrics.release_markers : []),
+        ];
+        const fallback = explicit.length
+            ? []
+            : history
+                .filter((item) => /\brelease\b|bump\s+scratchpad\s+to\s+\d/i.test(item.subject || ""))
+                .map((item) => ({
+                    name: (item.subject || "Release").replace(/^Release\s+Scratchpad\s+/i, "v").replace(/^Release\s+/i, "v").replace(/^Bump\s+Scratchpad\s+to\s+/i, "v"),
+                    sha: item.sha,
+                    short_sha: item.short_sha,
+                    date: item.date,
+                    subject: item.subject,
+                }));
+        const bySha = new Map(history.map((item, index) => [item.sha, index]));
+        const seen = new Set();
+        return [...explicit, ...fallback].map((release) => {
+            const sha = release.sha || release.commit_sha || release.commit;
+            let index = sha && bySha.has(sha) ? bySha.get(sha) : -1;
+            const releaseTime = new Date(release.date || 0).getTime();
+            if (index < 0 && Number.isFinite(releaseTime)) {
+                index = history.reduce((best, item, candidateIndex) => {
+                    const candidateTime = new Date(item.date || 0).getTime();
+                    if (!Number.isFinite(candidateTime)) return best;
+                    const distance = Math.abs(candidateTime - releaseTime);
+                    return distance < best.distance ? { index: candidateIndex, distance } : best;
+                }, { index: 0, distance: Infinity }).index;
+            }
+            if (index < 0) {
+                return null;
+            }
+            const key = `${release.name || release.tag || release.version || release.subject || "release"}-${index}`;
+            if (seen.has(key)) {
+                return null;
+            }
+            seen.add(key);
+            const item = history[index] || {};
+            return {
+                ...release,
+                index,
+                name: release.name || release.tag || release.version || "release",
+                date: release.date || item.date,
+                subject: release.subject || item.subject,
+                short_sha: release.short_sha || item.short_sha,
+            };
+        }).filter(Boolean);
+    }
+
+    function formatReleaseLabel(value) {
+        const text = String(value || "").trim();
+        const match = text.match(/v?(\d+(?:\.\d+)+)/i);
+        if (!match) {
+            return text.toLowerCase().startsWith("release") ? text : `Release ${text}`;
+        }
+        const parts = match[1].split(".");
+        while (parts.length > 2 && parts[parts.length - 1] === "0") {
+            parts.pop();
+        }
+        return `Release ${parts.join(".")}`;
     }
 
     function renderTopListCard({ title, subtitle, items, emptyText, tone = "neutral" }) {
@@ -4867,17 +5275,18 @@
 
         const slowItems = distinctPerformanceRows([...(state.slowspots || []), ...(state.searchSpeed || [])])
             .map((item) => ({
+                item,
                 name: performanceRowLabel(item),
                 ratio: item.threshold_ms ? (item.mean_ns / 1_000_000) / item.threshold_ms : 0,
             }))
             .filter((it) => it.ratio > 0)
-            .sort((a, b) => b.ratio - a.ratio)
+            .sort((a, b) => statusRank(budgetPressureTone(a.item, a.ratio)) - statusRank(budgetPressureTone(b.item, b.ratio)) || b.ratio - a.ratio)
             .slice(0, 5)
             .map((it) => ({
                 label: `<code>${escapeHtml(it.name)}</code>`,
                 tooltip: it.name,
                 preserveEnd: true,
-                value: `<span class="${it.ratio > 1 ? "risk-bad" : it.ratio > 0.85 ? "risk-warn" : "risk-good"}">${formatNumber.format(it.ratio * 100)}%</span>`,
+                value: `<span class="${budgetPressureTone(it.item, it.ratio) === "bad" ? "risk-bad" : budgetPressureTone(it.item, it.ratio) === "watch" ? "risk-warn" : "risk-good"}">${formatNumber.format(it.ratio * 100)}%</span>`,
             }));
 
         const tests = state.correctness?.tests || [];
@@ -4951,6 +5360,21 @@
             }));
     }
 
+    function mergeAppPackagePayload(nextPayload, previousPayload) {
+        if (!nextPayload || !previousPayload) return nextPayload;
+        const nextDiagnostics = Array.isArray(nextPayload.diagnostics) ? nextPayload.diagnostics : [];
+        const previousDiagnostics = Array.isArray(previousPayload.diagnostics) ? previousPayload.diagnostics : [];
+        if (nextDiagnostics.length || !previousDiagnostics.length) return nextPayload;
+        return {
+            ...nextPayload,
+            diagnostics: previousDiagnostics,
+            summary: {
+                ...(nextPayload.summary || {}),
+                diagnostic_count: previousDiagnostics.length,
+            },
+        };
+    }
+
     function renderRunStrip() {
         const target = byId("overview-run-strip");
         if (!target) return;
@@ -4965,7 +5389,7 @@
             const ts = run.finished_at || run.started_at || run.created_at || 0;
             const tsLabel = ts ? new Date(ts * 1000).toLocaleTimeString() : run.id;
             const isActive = state.selectedRun === run.id;
-            return `<button type="button" class="run-strip__dot ${isActive ? "is-active" : ""}" data-run-id="${escapeHtml(run.id)}" title="${escapeHtml(run.selector || run.id)}">
+            return `<button type="button" class="run-strip__dot ${isActive ? "is-active" : ""}" data-run-id="${escapeHtml(run.id)}" title="${escapeHtml(run.selector || run.id)}" aria-pressed="${isActive ? "true" : "false"}">
                 <span class="run-strip__bullet run-strip__bullet--${status}"></span>
                 <span>${escapeHtml(tsLabel)}${escapeHtml(dur)}</span>
             </button>`;
@@ -4974,14 +5398,19 @@
             el.addEventListener("click", () => {
                 const id = el.dataset.runId;
                 state.selectedRun = id;
-                const out = byId("overview-run-log");
-                if (out) {
-                    out.hidden = false;
-                    out.textContent = "Loading run log...";
-                }
+                updateRunStripSelection();
                 loadRunLog(id, "overview-run-log");
-                renderRunStrip();
             });
+        });
+    }
+
+    function updateRunStripSelection() {
+        const target = byId("overview-run-strip");
+        if (!target) return;
+        target.querySelectorAll(".run-strip__dot").forEach((button) => {
+            const isActive = button.dataset.runId === state.selectedRun;
+            button.classList.toggle("is-active", isActive);
+            button.setAttribute("aria-pressed", isActive ? "true" : "false");
         });
     }
 
@@ -6508,6 +6937,9 @@
 
     async function loadRunLog(runId, targetId = null) {
         if (!runId) return;
+        const run = state.runs.find((item) => item.id === runId);
+        const cachedText = state.runLogCache.get(runId);
+        const canUseCachedLog = cachedText != null && !activeRunStatuses.has(run?.status);
         if (!targetId && state.selectedRun === runId) {
             state.selectedRun = null;
             state.selectedRunLogText = "";
@@ -6516,19 +6948,24 @@
         }
         state.selectedRun = runId;
         if (!targetId) {
-            state.selectedRunLogText = "Loading run log...";
+            state.selectedRunLogText = cachedText || "Loading run log...";
             renderRunLog();
         }
         const output = targetId ? byId(targetId) : null;
         if (targetId && !output) return;
         if (targetId === "overview-run-log") output.hidden = false;
-        if (output) output.textContent = "Loading run log...";
+        if (output) {
+            setTextContentIfChanged(output, cachedText || "Loading run log...");
+        }
+        if (canUseCachedLog) return;
         try {
             const response = await fetch(`/api/run/${encodeURIComponent(runId)}/log`, { cache: "no-store" });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const text = await response.text();
+            state.runLogCache.set(runId, text);
             if (output) {
-                output.textContent = text;
+                if (state.selectedRun !== runId && targetId === "overview-run-log") return;
+                setTextContentIfChanged(output, text);
             } else {
                 if (state.selectedRun !== runId) return;
                 state.selectedRunLogText = text;
@@ -6537,7 +6974,7 @@
         } catch (error) {
             const message = `No log available from the dashboard server.\n${error.message}`;
             if (output) {
-                output.textContent = message;
+                setTextContentIfChanged(output, message);
             } else {
                 if (state.selectedRun !== runId) return;
                 state.selectedRunLogText = message;
@@ -6560,8 +6997,13 @@
         }
         try {
             state.appPackageLoadState = "loading";
-            state.appPackage = await loadJson(`/api/app-package?v=${Date.now()}`);
+            state.appPackage = mergeAppPackagePayload(
+                await loadJson(`/api/app-package?v=${Date.now()}`),
+                state.appPackage
+            );
             state.appPackageLoadState = "loaded";
+            state.appPackageLiveLoaded = true;
+            invalidateAppPackageConsumers();
             if (button) {
                 setButtonProgress(button, {
                     label,
@@ -6576,6 +7018,8 @@
         } catch (error) {
             state.appPackage = null;
             state.appPackageLoadState = "error";
+            state.appPackageLiveLoaded = false;
+            invalidateAppPackageConsumers();
             byId("load-status").textContent = "App package unavailable.";
             byId("load-detail").textContent = `Start with scripts/open-overview.ps1 to enable the local dashboard API. ${error.message}`;
         } finally {
@@ -6594,6 +7038,8 @@
             const response = await fetch("/api/app-package/clear-buffers", { method: "POST", cache: "no-store" });
             const payload = await response.json();
             state.appPackage = payload;
+            state.appPackageLiveLoaded = true;
+            invalidateAppPackageConsumers();
             const result = state.appPackage?.clear_result || {};
             byId("load-status").textContent = result.blocked
                 ? (result.message || "Close Scratchpad before clearing buffers.")
@@ -6619,9 +7065,9 @@
             const previousFinished = state.lastObservedFinishedRun;
             state.runs = await loadJson(`/api/runs?v=${Date.now()}`);
             renderRunButtonsProgress();
-            const latestFinished = [...state.runs].reverse().find((item) => item.finished_at);
-            if (latestFinished && latestFinished.id !== previousFinished) {
-                state.lastObservedFinishedRun = latestFinished.id;
+            const latestFinishedId = latestFinishedRunId();
+            if (latestFinishedId && latestFinishedId !== previousFinished) {
+                state.lastObservedFinishedRun = latestFinishedId;
                 await loadDefaults();
                 return;
             }
@@ -6685,7 +7131,7 @@
     async function loadDefaults() {
         const status = byId("load-status");
         const detail = byId("load-detail");
-        const keys = ["catalog", "runs", "hotspots", "slowspots", "searchSpeed", "capacityReport", "resourceProfiles", "speedReport", "performanceReview", "clones", "typeHealth", "escapeHatches", "locality", "leverage", "map", "projectCodeMetrics", "flamegraphs", "correctness"];
+        const keys = ["catalog", "runs", "hotspots", "slowspots", "searchSpeed", "capacityReport", "resourceProfiles", "frameMetrics", "speedReport", "performanceReview", "clones", "typeHealth", "escapeHatches", "locality", "leverage", "map", "projectCodeMetrics", "flamegraphs", "correctness", "appPackage"];
         const fallbacks = {
             catalog: null,
             runs: [],
@@ -6694,6 +7140,7 @@
             searchSpeed: [],
             capacityReport: null,
             resourceProfiles: null,
+            frameMetrics: null,
             speedReport: null,
             performanceReview: null,
             clones: [],
@@ -6711,20 +7158,36 @@
         const settled = await Promise.allSettled(keys.map((key) => loadJson(sources[key])));
         const loaded = [];
         const missing = [];
+        const previousAppPackage = state.appPackage;
 
         settled.forEach((result, index) => {
             const key = keys[index];
             if (result.status === "fulfilled") {
-                state[key] = result.value;
+                state[key] = key === "appPackage"
+                    ? mergeAppPackagePayload(result.value, previousAppPackage)
+                    : result.value;
                 loaded.push(key);
+                if (key === "appPackage") {
+                    state.appPackageLoadState = "loaded";
+                    state.appPackageLiveLoaded = false;
+                    invalidateAppPackageConsumers();
+                }
             } else {
-                state[key] = fallbacks[key];
+                state[key] = key === "appPackage" && previousAppPackage
+                    ? previousAppPackage
+                    : fallbacks[key];
+                if (key === "appPackage") {
+                    state.appPackageLoadState = previousAppPackage ? "loaded" : "error";
+                    state.appPackageLiveLoaded = false;
+                    invalidateAppPackageConsumers();
+                }
                 // flamegraphs is often missing if not generated, so we don't treat it as a loud error
                 if (key !== "flamegraphs" && key !== "runs" && key !== "catalog" && key !== "appPackage") {
                     missing.push(`${key}: ${result.reason.message}`);
                 }
             }
         });
+        state.lastObservedFinishedRun = state.lastObservedFinishedRun || latestFinishedRunId();
 
         if (missing.length === 0) {
             status.textContent = "Loaded default JSON artifacts.";
@@ -6796,21 +7259,29 @@
     }
 
     async function loadAppPackageOnce() {
-        if (state.appPackageLoadState === "loading" || state.appPackageLoadState === "loaded") {
+        if (state.appPackageLoadState === "loading" || (state.appPackageLoadState === "loaded" && (isStaticHost || state.appPackageLiveLoaded))) {
             return;
         }
+        const previousAppPackage = state.appPackage;
         state.appPackageLoadState = "loading";
         try {
-            state.appPackage = await loadJson(sources.appPackage);
+            state.appPackage = mergeAppPackagePayload(
+                await loadJson(sources.appPackageLive),
+                previousAppPackage
+            );
             state.appPackageLoadState = "loaded";
+            state.appPackageLiveLoaded = !isStaticHost;
+            invalidateAppPackageConsumers();
             if (byId("app-package")?.classList.contains("is-active")) {
                 byId("load-status").textContent = "Loaded app package.";
                 byId("load-detail").textContent = `Session root: ${state.appPackage.session_root || "unknown"}`;
                 renderAppPackage();
             }
         } catch (error) {
-            state.appPackage = null;
-            state.appPackageLoadState = "error";
+            state.appPackage = previousAppPackage || null;
+            state.appPackageLoadState = previousAppPackage ? "loaded" : "error";
+            state.appPackageLiveLoaded = false;
+            invalidateAppPackageConsumers();
             if (byId("app-package")?.classList.contains("is-active")) {
                 byId("load-status").textContent = "App package unavailable.";
                 byId("load-detail").textContent = `Start with scripts/open-overview.ps1 to enable the local dashboard API. ${error.message}`;
@@ -8426,5 +8897,8 @@
     activateTab(initialTab, { skipRender: true });
     loadDefaults().then(() => {
         renderQualityDatasetView();
+        if (!isStaticHost) {
+            loadAppPackageOnce();
+        }
     });
 })();

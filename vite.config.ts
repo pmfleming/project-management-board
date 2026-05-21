@@ -4,7 +4,7 @@ import type { PluginContext } from "rollup";
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join, normalize, resolve, sep } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -61,9 +61,10 @@ const scratchpadPerformanceLensRoot = resolve(
   process.env.SCRATCHPAD_PERFORMANCE_LENS_ROOT ??
     join(scratchpadRoot, "..", "scratchpad-performance-lens"),
 );
-const analysisRoot = join(scratchpadRoot, "target", "analysis");
+const analysisRoot = resolve(process.env.PMB_ANALYSIS_ROOT ?? join(repoRoot, "target", "analysis"));
 const runsPath = join(analysisRoot, "measurement_runs.json");
 const logDir = join(analysisRoot, "logs");
+const lensConfigDir = join(analysisRoot, ".config");
 const viewerControllerPath = join(repoRoot, "src", "viewer", "data-viewer.ts");
 const commandTimeoutMs = Number(process.env.PMB_COMMAND_TIMEOUT_MS ?? 30 * 60 * 1000);
 const hostedAnalysisFiles = [
@@ -74,6 +75,7 @@ const hostedAnalysisFiles = [
   "search_speed.json",
   "capacity_report.json",
   "resource_profiles.json",
+  "frame_metrics.json",
   "speed_efficiency_report.json",
   "performance_review.json",
   "clones.json",
@@ -99,6 +101,7 @@ let runs: MeasurementRun[] = loadRuns().map((run) =>
 );
 let activeRun: MeasurementRun | null = null;
 let warnedRunPersistence = false;
+writeLensConfigs();
 saveRuns();
 
 function projectBoardPlugin(): Plugin {
@@ -344,6 +347,9 @@ async function runTaskBatch(runId: string, tasks: MeasurementTask[]): Promise<vo
     }
     artifacts.push(...(task.output_artifacts ?? []));
     if (taskExit === 0) {
+      if (task.id === "map.project_code_metrics") {
+        enrichProjectCodeMetricsWithReleases(logPath);
+      }
       completed.push(task.id);
     } else {
       failed.push(task.id);
@@ -615,7 +621,7 @@ function buildCatalog(): MeasurementCatalog {
       title: "Project Rust Code Metrics",
       description:
         "Counts application, test, and other Rust code, then samples first-parent GitHub history for line progress.",
-      commands: [["splens", "measure", "project-code"]],
+      commands: [["splens-project-code", "--history-limit", "5000"]],
       output_artifacts: ["target/analysis/project_code_metrics.json"],
     }),
     item({
@@ -692,14 +698,25 @@ function normalizeCommand(rawCommand: string[]): string[] {
   if (rawCommand[0] === "rqlens") {
     return addDefaultConfig(
       [pythonPath(), "-m", "rust_quality_lens.cli", ...rawCommand.slice(1)],
-      "rqlens.toml",
+      rustQualityLensConfigPath(),
     );
   }
   if (rawCommand[0] === "splens") {
     return addDefaultConfig(
       [pythonPath(), "-m", "scratchpad_performance_lens.cli", ...rawCommand.slice(1)],
-      "splens.toml",
+      scratchpadPerformanceLensConfigPath(),
     );
+  }
+  if (rawCommand[0] === "splens-project-code") {
+    return [
+      pythonPath(),
+      join(scratchpadPerformanceLensRoot, "src", "scratchpad_performance_lens", "tools", "project_code_metrics.py"),
+      "--mode",
+      "visibility",
+      "--output",
+      join(analysisRoot, "project_code_metrics.json"),
+      ...rawCommand.slice(1),
+    ];
   }
   const command = [...rawCommand];
   if (command[0]?.endsWith("python.exe") && !existsSync(resolve(scratchpadRoot, command[0]))) {
@@ -708,8 +725,8 @@ function normalizeCommand(rawCommand: string[]): string[] {
   return command;
 }
 
-function addDefaultConfig(command: string[], configName: string): string[] {
-  return command.includes("--config") ? command : [...command, "--config", configName];
+function addDefaultConfig(command: string[], configPath: string): string[] {
+  return command.includes("--config") ? command : [...command, "--config", configPath];
 }
 
 function commandEnvironment(kind: string): NodeJS.ProcessEnv {
@@ -718,6 +735,12 @@ function commandEnvironment(kind: string): NodeJS.ProcessEnv {
   }
   if (kind === "splens") {
     return withPythonPath([join(scratchpadPerformanceLensRoot, "src")]);
+  }
+  if (kind === "splens-project-code") {
+    return withPythonPath([
+      join(scratchpadPerformanceLensRoot, "src"),
+      join(scratchpadPerformanceLensRoot, "src", "scratchpad_performance_lens", "tools"),
+    ]);
   }
   return process.env;
 }
@@ -793,6 +816,99 @@ function saveRuns(): void {
       console.warn(`Unable to persist measurement runs to ${runsPath}: ${errorMessage(error)}`);
     }
   }
+}
+
+function enrichProjectCodeMetricsWithReleases(logPath: string): void {
+  const metricsPath = join(analysisRoot, "project_code_metrics.json");
+  if (!existsSync(metricsPath)) {
+    return;
+  }
+  try {
+    const payload = JSON.parse(readFileSync(metricsPath, "utf8")) as JsonRecord;
+    const releases = scratchpadReleaseTags();
+    if (releases.length === 0) {
+      return;
+    }
+    payload.releases = releases;
+    writeFileSync(metricsPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    appendLog(logPath, `Added ${releases.length} release markers to project_code_metrics.json\n`);
+  } catch (error) {
+    appendLog(
+      logPath,
+      `Warning: Could not add release markers to project_code_metrics.json: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`,
+    );
+  }
+}
+
+function scratchpadReleaseTags(): JsonRecord[] {
+  const tagNames = gitOutput(["tag", "--sort=creatordate"])
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return tagNames.map((tag) => {
+    const sha = gitOutput(["rev-list", "-n", "1", tag]).trim();
+    const date = gitOutput(["log", "-1", "--date=iso-strict", "--pretty=%cI", sha]).trim();
+    const subject = gitOutput(["log", "-1", "--pretty=%s", sha]).trim();
+    return {
+      name: tag,
+      tag,
+      sha,
+      short_sha: sha.slice(0, 8),
+      date,
+      subject,
+    };
+  });
+}
+
+function gitOutput(args: string[]): string {
+  const result = spawnSync("git", args, {
+    cwd: scratchpadRoot,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || `git ${args.join(" ")} failed`);
+  }
+  return result.stdout;
+}
+
+function writeLensConfigs(): void {
+  mkdirSync(lensConfigDir, { recursive: true });
+  writeFileSync(
+    scratchpadPerformanceLensConfigPath(),
+    [
+      'project_name = "scratchpad"',
+      `project_root = ${tomlString(scratchpadRoot)}`,
+      `output_dir = ${tomlString(analysisRoot)}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    rustQualityLensConfigPath(),
+    [
+      'project_name = "scratchpad"',
+      `project_root = ${tomlString(scratchpadRoot)}`,
+      'source_roots = ["src"]',
+      `output_dir = ${tomlString(analysisRoot)}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+function scratchpadPerformanceLensConfigPath(): string {
+  return join(lensConfigDir, "splens.toml");
+}
+
+function rustQualityLensConfigPath(): string {
+  return join(lensConfigDir, "rqlens.toml");
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value.replaceAll("\\", "/"));
 }
 
 function updateRun(runId: string, changes: Partial<MeasurementRun>): void {
