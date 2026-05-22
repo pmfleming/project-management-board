@@ -319,7 +319,7 @@ async function runTaskBatch(runId: string, tasks: MeasurementTask[]): Promise<vo
       if (rawCommand[0] === "board-catalog") {
         const outputPath = join(analysisRoot, "measurement_catalog.json");
         mkdirSync(dirname(outputPath), { recursive: true });
-        writeFileSync(outputPath, `${JSON.stringify(buildCatalog(), null, 2)}\n`, "utf8");
+        writeFileSync(outputPath, `${JSON.stringify(await getCatalog(), null, 2)}\n`, "utf8");
         appendLog(logPath, `Wrote ${outputPath}\n`);
         artifacts.push("target/analysis/measurement_catalog.json");
         continue;
@@ -434,7 +434,16 @@ function runLoggedCommand(
 }
 
 async function getCatalog(): Promise<MeasurementCatalog> {
-  return buildCatalog();
+  const rustCatalog = await rustQualityCatalog();
+  return buildCatalog(rustCatalog);
+}
+
+async function rustQualityCatalog(): Promise<MeasurementCatalog> {
+  const command = addDefaultConfig(
+    [pythonPath(), "-m", "rust_quality_lens.cli", "catalog"],
+    rustQualityLensConfigPath(),
+  );
+  return runJsonCommand(command, commandEnvironment("rqlens"));
 }
 
 function item(
@@ -460,45 +469,9 @@ function item(
   };
 }
 
-function buildCatalog(): MeasurementCatalog {
+function buildCatalog(rustCatalog: MeasurementCatalog): MeasurementCatalog {
   const tasks: MeasurementTask[] = [
-    item({
-      id: "quality.hotspots",
-      category: "quality",
-      subcategory: "hotspots",
-      title: "Hotspots",
-      description: "Ranks complexity risk without SLOC scoring.",
-      commands: [["rqlens", "measure", "hotspots"]],
-      output_artifacts: ["target/analysis/hotspots.json"],
-    }),
-    item({
-      id: "quality.clones",
-      category: "quality",
-      subcategory: "clones",
-      title: "Clones",
-      description: "Finds repeated code structures.",
-      commands: [["rqlens", "measure", "clones"]],
-      output_artifacts: ["target/analysis/clones.json"],
-    }),
-    item({
-      id: "quality.escape_hatches",
-      category: "quality",
-      subcategory: "safety",
-      title: "Rust Escape Hatches",
-      description:
-        "Tracks unsafe, FFI, mutable globals, raw memory, layout/linkage attributes, and lint suppressions.",
-      commands: [["rqlens", "measure", "escape-hatches"]],
-      output_artifacts: ["target/analysis/rust_escape_hatches.json"],
-    }),
-    item({
-      id: "quality.type_health",
-      category: "quality",
-      subcategory: "structure",
-      title: "Type Health",
-      description: "Ranks wide structs, large enums, broad method surfaces, and impl spread.",
-      commands: [["rqlens", "measure", "type-health"]],
-      output_artifacts: ["target/analysis/type_health.json"],
-    }),
+    ...importedCatalogTasks(rustCatalog),
     item({
       id: "performance.slowspots",
       category: "performance",
@@ -584,37 +557,6 @@ function buildCatalog(): MeasurementCatalog {
       expensive: true,
     }),
     item({
-      id: "correctness.catalog",
-      category: "correctness",
-      subcategory: "tests",
-      title: "Correctness Catalog",
-      description: "Discovers tests by architecture layer.",
-      commands: [["rqlens", "measure", "correctness"]],
-      output_artifacts: [
-        "target/analysis/correctness_review.json",
-        "target/analysis/test_catalog.json",
-      ],
-    }),
-    item({
-      id: "correctness.all",
-      category: "correctness",
-      subcategory: "tests",
-      title: "All Tests",
-      description: "Runs the full Rust test suite.",
-      commands: [["rqlens", "measure", "correctness-run"]],
-      output_artifacts: ["target/analysis/correctness_review.json"],
-      expensive: true,
-    }),
-    item({
-      id: "map.architecture",
-      category: "map",
-      subcategory: "architecture",
-      title: "Architecture Map",
-      description: "Refreshes module health and dependency map.",
-      commands: [["rqlens", "measure", "map"]],
-      output_artifacts: ["target/analysis/map.json"],
-    }),
-    item({
       id: "map.project_code_metrics",
       category: "map",
       subcategory: "code",
@@ -623,26 +565,6 @@ function buildCatalog(): MeasurementCatalog {
         "Counts application, test, and other Rust code, then samples first-parent GitHub history for line progress.",
       commands: [["splens-project-code", "--history-limit", "5000"]],
       output_artifacts: ["target/analysis/project_code_metrics.json"],
-    }),
-    item({
-      id: "quality.locality_dynamic",
-      category: "quality",
-      subcategory: "locality",
-      title: "Code Locality",
-      description:
-        "Measures dependency spread, hidden coupling, interface explicitness, and change locality.",
-      commands: [["rqlens", "measure", "locality"]],
-      output_artifacts: ["target/analysis/locality_metrics.json"],
-    }),
-    item({
-      id: "quality.locality_leverage",
-      category: "quality",
-      subcategory: "leverage",
-      title: "Architecture Leverage",
-      description:
-        "Measures reach, invariant surface, divergence pressure, and co-change ripple.",
-      commands: [["rqlens", "measure", "leverage"]],
-      output_artifacts: ["target/analysis/leverage_metrics.json"],
     }),
     item({
       id: "dashboard.catalog",
@@ -656,6 +578,8 @@ function buildCatalog(): MeasurementCatalog {
   ];
   return {
     version: 1,
+    project_name: rustCatalog.project_name,
+    analysis_root: rustCatalog.analysis_root,
     categories: [
       { id: "quality", title: "Quality Review" },
       { id: "performance", title: "Performance Review" },
@@ -664,6 +588,37 @@ function buildCatalog(): MeasurementCatalog {
     ],
     tasks,
   };
+}
+
+function importedCatalogTasks(catalog: MeasurementCatalog): MeasurementTask[] {
+  const rawTasks = Array.isArray(catalog.tasks) ? catalog.tasks : [];
+  return rawTasks
+    .filter((task) => ["quality", "correctness", "map"].includes(task.category))
+    .map((task) => ({
+      ...task,
+      subcategory: task.subcategory || task.category,
+      description: task.description || task.title,
+      commands: task.commands ?? [],
+      output_artifacts: normalizeCatalogArtifacts(task.output_artifacts ?? []),
+      depends_on: task.depends_on ?? [],
+      expensive: task.expensive ?? false,
+      supports_individual_run: task.supports_individual_run ?? true,
+      related_profiles: task.related_profiles ?? [],
+      related_tests: task.related_tests ?? [],
+      related_modules: task.related_modules ?? [],
+    }));
+}
+
+function normalizeCatalogArtifacts(artifacts: string[]): string[] {
+  return artifacts.map((artifact) => {
+    const normalized = artifact.replaceAll("\\", "/");
+    const marker = "/target/analysis/";
+    const markerIndex = normalized.lastIndexOf(marker);
+    if (markerIndex !== -1) {
+      return `target/analysis/${normalized.slice(markerIndex + marker.length)}`;
+    }
+    return normalized.startsWith("target/analysis/") ? normalized : `target/analysis/${normalized}`;
+  });
 }
 
 function selectedTasks(tasks: MeasurementTask[], selector: string): MeasurementTask[] {
@@ -762,12 +717,13 @@ function pythonPath(): string {
   return existsSync(venvPython) ? venvPython : "python";
 }
 
-function runJsonCommand(command: string[]): Promise<JsonRecord> {
+function runJsonCommand(command: string[], env: NodeJS.ProcessEnv = process.env): Promise<JsonRecord> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command[0], command.slice(1), {
       cwd: scratchpadRoot,
       shell: false,
       windowsHide: true,
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
